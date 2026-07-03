@@ -81,18 +81,3 @@ midi show/
 ```bash
 pip install mido python-rtmidi python-osc
 ```
-
----
-
-## GitHub 上传指南
-
-```bash
-# 1. 提交本地改动
-git add .
-git commit -m "描述你的改动"
-
-# 2. 推送
-git push origin master
-```
-
-> 如 GitHub 默认分支是 `main`，先执行 `git branch -M main`
