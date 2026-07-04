@@ -13,6 +13,8 @@ import logging
 import threading
 from typing import Callable, Optional
 
+import mido
+
 logger = logging.getLogger(__name__)
 
 
@@ -30,7 +32,6 @@ def _build_midi_msg(
     channel: int = 0,
 ):
     """Build a mido.Message for the given type and parameters."""
-    import mido
 
     if msg_type == "note_on":
         return mido.Message("note_on", note=note, velocity=velocity, channel=channel)
@@ -40,7 +41,8 @@ def _build_midi_msg(
         return mido.Message(
             "control_change", control=control, value=value, channel=channel
         )
-    return mido.Message("note_on", note=note, velocity=velocity, channel=channel)
+    logger.warning(f"Unrecognized MIDI message type: {msg_type}")
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -97,6 +99,8 @@ class _BaseMidiOutput:
         if not self._enabled or self._port is None:
             return
         msg = _build_midi_msg("note_on", note, velocity, channel=channel)
+        if msg is None:
+            return
         with self._lock:
             try:
                 self._port.send(msg)
@@ -107,6 +111,8 @@ class _BaseMidiOutput:
         if not self._enabled or self._port is None:
             return
         msg = _build_midi_msg("note_off", note, velocity, channel=channel)
+        if msg is None:
+            return
         with self._lock:
             try:
                 self._port.send(msg)
@@ -122,6 +128,8 @@ class _BaseMidiOutput:
                     cc_msg = _build_midi_msg(
                         "control_change", control=123, value=0, channel=ch
                     )
+                    if cc_msg is None:
+                        continue
                     self._port.send(cc_msg)
             except Exception:
                 pass
@@ -148,8 +156,6 @@ class LocalSynthOutput(_BaseMidiOutput):
         if not self._enabled:
             return
         try:
-            import mido
-
             # Find Microsoft GS Wavetable Synth
             for name in mido.get_output_names():
                 if "microsoft" in name.lower() and "wavetable" in name.lower():
@@ -193,7 +199,6 @@ class VirtualMidiOutput(_BaseMidiOutput):
     def _open(self):
         if not self._enabled:
             return
-        import mido
 
         outputs = mido.get_output_names()
         # Find the specified virtual port
@@ -214,8 +219,6 @@ class VirtualMidiOutput(_BaseMidiOutput):
         logger.info(f"Virtual port '{self._port_name}' not found. Available: {outputs}")
 
     def get_available_ports(self) -> list[str]:
-        import mido
-
         return mido.get_output_names()
 
     def set_port_name(self, name: str):
@@ -338,6 +341,9 @@ class OscOutput:
                 else:
                     for note in range(128):
                         self._sender.send(f"/avatar/parameters/note{note:03d}", 0.0)
+                        for ch in range(16):
+                            ch_addr = f"/avatar/parameters/note_ch{ch:02d}_{note:03d}"
+                            self._sender.send(ch_addr, 0.0)
             except Exception:
                 pass
 
@@ -385,8 +391,6 @@ class MidiInput:
         if not self._enabled:
             return
         try:
-            import mido
-
             for name in mido.get_input_names():
                 if self._port_name.lower().replace(" ", "") in name.lower().replace(
                     " ", ""
@@ -464,8 +468,6 @@ class MidiInput:
         return "Not connected"
 
     def get_available_ports(self) -> list[str]:
-        import mido
-
         return mido.get_input_names()
 
     def set_port_name(self, name: str):

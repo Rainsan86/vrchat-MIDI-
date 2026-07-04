@@ -10,6 +10,7 @@ from typing import Optional
 
 from .midi_parser import MidiData, parse_midi
 from .engine import PlaybackEngine
+from .piano_roll import PianoRoll
 from .outputs import LocalSynthOutput, VirtualMidiOutput, OscOutput, MidiInput
 from .library import LibraryManager
 from .i18n import tr as _tr, trf as _trf, set_language, get_language
@@ -95,12 +96,15 @@ class MidiShowUI:
         self._synth_port_var: Optional[tk.StringVar] = None
         self._virtual_port_var: Optional[tk.StringVar] = None
         self._osc_addr_var: Optional[tk.StringVar] = None
+        self._playback_transpose_var: Optional[tk.IntVar] = None
+        self._midi_input_transpose_var: Optional[tk.IntVar] = None
 
         # Connect engine callbacks
         self._engine.set_callbacks(
             on_note_on=self._on_note_on,
             on_note_off=self._on_note_off,
             on_finish=self._on_finish,
+            on_update=self._on_engine_update,
         )
 
         self._build_ui()
@@ -192,6 +196,30 @@ class MidiShowUI:
         self._speed_spinbox.bind("<Key-Return>", self._on_speed_change_event)
         self._speed_spinbox.bind("<FocusOut>", self._on_speed_change_event)
         ttk.Label(ctrl_frame, text=_tr("label.speed_x")).pack(side=tk.LEFT)
+
+        # -- Playback Transpose --
+        ttk.Label(ctrl_frame, text="  ").pack(side=tk.LEFT)
+        ttk.Label(ctrl_frame, text=_tr("playback.transpose")).pack(side=tk.LEFT)
+        self._playback_transpose_var = tk.IntVar(
+            value=self._settings.playback_transpose
+        )
+        self._playback_transpose_spinbox = ttk.Spinbox(
+            ctrl_frame,
+            from_=-12,
+            to=12,
+            increment=1,
+            textvariable=self._playback_transpose_var,
+            width=5,
+            command=self._on_playback_transpose_change,
+        )
+        self._playback_transpose_spinbox.pack(side=tk.LEFT, padx=4)
+        self._playback_transpose_spinbox.bind(
+            "<Key-Return>", self._on_playback_transpose_event
+        )
+        self._playback_transpose_spinbox.bind(
+            "<FocusOut>", self._on_playback_transpose_event
+        )
+        ttk.Label(ctrl_frame, text=_tr("label.semitones")).pack(side=tk.LEFT)
 
         # ===================== Progress =====================
         prog_frame = ttk.Frame(root, padding=(10, 2, 10, 4))
@@ -292,6 +320,7 @@ class MidiShowUI:
         self._local_audio_var = tk.BooleanVar(value=self._settings.local_audio_enabled)
         self._virtual_var = tk.BooleanVar(value=self._settings.virtual_midi_enabled)
         self._osc_var = tk.BooleanVar(value=self._settings.osc_output_enabled)
+        self._volume_var = tk.DoubleVar(value=self._settings.volume)
 
         # Local Audio
         local_cb = ttk.Checkbutton(
@@ -394,9 +423,53 @@ class MidiShowUI:
             command=self._apply_osc_mode,
         ).pack(side=tk.LEFT, padx=2)
 
-        # -- MIDI Input --
+        # ── Volume ──
         ttk.Separator(out_frame, orient=tk.HORIZONTAL).grid(
             row=7, column=0, columnspan=2, sticky=tk.EW, pady=6
+        )
+        vol_frame = ttk.Frame(out_frame)
+        vol_frame.grid(row=8, column=0, sticky=tk.W, pady=2)
+        ttk.Label(vol_frame, text=_tr("output.volume")).pack(side=tk.LEFT)
+        self._volume_scale = ttk.Scale(
+            vol_frame,
+            from_=0,
+            to=1,
+            variable=self._volume_var,
+            orient=tk.HORIZONTAL,
+            length=150,
+            command=self._on_volume_change,
+        )
+        self._volume_scale.pack(side=tk.LEFT, padx=6)
+        # Manual bindings for both trough-click and drag
+        self._volume_scale.bind("<Button-1>", self._on_volume_trough_click)
+        self._volume_scale.bind("<B1-Motion>", self._on_volume_drag)
+        self._volume_label_var = tk.StringVar(
+            value=f"{int(self._settings.volume * 100)}%"
+        )
+        ttk.Label(vol_frame, textvariable=self._volume_label_var, width=5).pack(
+            side=tk.LEFT
+        )
+        ttk.Label(vol_frame, text="  ").pack(side=tk.LEFT)
+        self._volume_spin_var = tk.StringVar(
+            value=f"{int(self._settings.volume * 100)}"
+        )
+        self._volume_spinbox = ttk.Spinbox(
+            vol_frame,
+            from_=0,
+            to=100,
+            increment=1,
+            textvariable=self._volume_spin_var,
+            width=5,
+            command=self._on_volume_spin_change,
+        )
+        self._volume_spinbox.pack(side=tk.LEFT)
+        self._volume_spinbox.bind("<Key-Return>", self._on_volume_spin_event)
+        self._volume_spinbox.bind("<FocusOut>", self._on_volume_spin_event)
+        ttk.Label(vol_frame, text="%").pack(side=tk.LEFT)
+
+        # -- MIDI Input --
+        ttk.Separator(out_frame, orient=tk.HORIZONTAL).grid(
+            row=9, column=0, columnspan=2, sticky=tk.EW, pady=6
         )
         self._midi_input_var = tk.BooleanVar(value=self._settings.midi_input_enabled)
         midi_input_cb = ttk.Checkbutton(
@@ -405,10 +478,10 @@ class MidiShowUI:
             variable=self._midi_input_var,
             command=self._toggle_midi_input,
         )
-        midi_input_cb.grid(row=8, column=0, sticky=tk.W, pady=2)
+        midi_input_cb.grid(row=10, column=0, sticky=tk.W, pady=2)
 
         midi_input_port_frame = ttk.Frame(out_frame)
-        midi_input_port_frame.grid(row=9, column=0, sticky=tk.W, pady=2)
+        midi_input_port_frame.grid(row=11, column=0, sticky=tk.W, pady=2)
         ttk.Label(midi_input_port_frame, text=_tr("midi.input_port")).pack(side=tk.LEFT)
         self._midi_input_port_var = tk.StringVar(value=self._settings.midi_input_port)
         self._midi_input_combo = ttk.Combobox(
@@ -425,12 +498,88 @@ class MidiShowUI:
         ).pack(side=tk.LEFT, padx=2)
         self._refresh_midi_input_ports()
 
+        # -- MIDI Input Transpose --
+        midi_input_transpose_frame = ttk.Frame(out_frame)
+        midi_input_transpose_frame.grid(row=12, column=0, sticky=tk.W, pady=2)
+        ttk.Label(midi_input_transpose_frame, text=_tr("midi.input_transpose")).pack(
+            side=tk.LEFT
+        )
+        self._midi_input_transpose_var = tk.IntVar(
+            value=self._settings.midi_input_transpose
+        )
+        self._midi_input_transpose_spinbox = ttk.Spinbox(
+            midi_input_transpose_frame,
+            from_=-12,
+            to=12,
+            increment=1,
+            textvariable=self._midi_input_transpose_var,
+            width=5,
+            command=self._on_midi_input_transpose_change,
+        )
+        self._midi_input_transpose_spinbox.pack(side=tk.LEFT, padx=4)
+        self._midi_input_transpose_spinbox.bind(
+            "<Key-Return>", self._on_midi_input_transpose_event
+        )
+        self._midi_input_transpose_spinbox.bind(
+            "<FocusOut>", self._on_midi_input_transpose_event
+        )
+        ttk.Label(midi_input_transpose_frame, text=_tr("label.semitones")).pack(
+            side=tk.LEFT
+        )
+
+        # ===================== Track Filter tab =====================
+        track_frame = ttk.Frame(nb, padding=6)
+        nb.add(track_frame, text=_tr("tab.track_filter"))
+
+        # Canvas + Scrollbar for scrolling track list
+        track_canvas = tk.Canvas(track_frame, highlightthickness=0, borderwidth=0)
+        track_scrollbar = ttk.Scrollbar(
+            track_frame, orient=tk.VERTICAL, command=track_canvas.yview
+        )
+        track_canvas.configure(yscrollcommand=track_scrollbar.set)
+        track_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        track_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        # Inner frame for track rows
+        track_inner = ttk.Frame(track_canvas, padding=2)
+        track_inner.bind(
+            "<Configure>",
+            lambda e: track_canvas.configure(scrollregion=track_canvas.bbox("all")),
+        )
+        track_canvas.create_window(
+            (0, 0), window=track_inner, anchor="nw", tags="track_inner"
+        )
+
+        # Allow mousewheel scrolling when hovering over canvas
+        def _on_track_mousewheel(event):
+            track_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+        track_canvas.bind(
+            "<Enter>",
+            lambda e: track_canvas.bind_all("<MouseWheel>", _on_track_mousewheel),
+        )
+        track_canvas.bind("<Leave>", lambda e: track_canvas.unbind_all("<MouseWheel>"))
+
+        self._track_inner = track_inner
+        self._track_rows: list[
+            dict
+        ] = []  # list of dicts: frame, name_label, notes_label, mute_btn, solo_btn
+
+        # Placeholder when no file loaded
+        self._track_placeholder = ttk.Label(
+            track_inner,
+            text=_tr("track.no_tracks"),
+            foreground="#999",
+            anchor=tk.CENTER,
+            justify=tk.CENTER,
+        )
+
         # -- Live Passthrough --
         ttk.Separator(out_frame, orient=tk.HORIZONTAL).grid(
-            row=10, column=0, columnspan=2, sticky=tk.EW, pady=6
+            row=13, column=0, columnspan=2, sticky=tk.EW, pady=6
         )
         passthrough_frame = ttk.Frame(out_frame)
-        passthrough_frame.grid(row=11, column=0, sticky=tk.W, pady=2)
+        passthrough_frame.grid(row=14, column=0, sticky=tk.W, pady=2)
         self._passthrough_cb = ttk.Checkbutton(
             passthrough_frame,
             text=_tr("midi.passthrough"),
@@ -445,6 +594,24 @@ class MidiShowUI:
             font=("Segoe UI", 9, "italic"),
             foreground="#555",
         ).pack(side=tk.LEFT, padx=8)
+
+        # -- Piano Roll tab --
+        piano_frame = ttk.Frame(nb, padding=0)
+        nb.add(piano_frame, text=_tr("tab.piano_roll") + " [测试]")
+
+        self._piano_roll = PianoRoll(piano_frame, height=300)
+        self._piano_roll.pack(fill=tk.BOTH, expand=True)
+
+        # Enable/disable checkbox
+        piano_ctrl_frame = ttk.Frame(piano_frame, padding=(4, 2, 4, 4))
+        piano_ctrl_frame.pack(fill=tk.X)
+        self._piano_enabled_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            piano_ctrl_frame,
+            text=_tr("output.local_audio"),
+            variable=self._piano_enabled_var,
+            command=self._toggle_piano,
+        ).pack(side=tk.LEFT)
 
         # -- Info tab --
         info_tab = ttk.Frame(nb, padding=10)
@@ -469,37 +636,21 @@ class MidiShowUI:
         status_frame.pack(fill=tk.X, side=tk.BOTTOM)
 
         self._status_var = tk.StringVar(value=_tr("status.ready"))
-        status_label = ttk.Label(
+        status_label = tk.Label(
             status_frame, textvariable=self._status_var, relief=tk.SUNKEN, anchor=tk.W
         )
         status_label.pack(fill=tk.X)
 
     # ===================== Event handlers =====================
 
-    def _load_file(self):
-        path = filedialog.askopenfilename(
-            title=_tr("dialog.select_midi"),
-            filetypes=[
-                (_tr("dialog.midi_files"), "*.mid *.midi"),
-                (_tr("dialog.all_files"), "*.*"),
-            ],
-        )
-        if not path:
-            return
-
-        data = parse_midi(path)
-        if data is None:
-            self._status_var.set(_trf("status.load_failed", path=path))
-            return
-
+    def _apply_loaded_midi(self, data: MidiData, path: str):
+        """Apply parsed MIDI data to engine and update UI (no status message)."""
         self._data = data
         self._engine.load(data)
 
-        # Reset counters
         self._note_on_count = 0
         self._note_off_count = 0
 
-        # Update UI
         filename = os.path.basename(path)
         self._file_label.config(text=filename)
         self._title_label.config(text=data.title)
@@ -520,8 +671,35 @@ class MidiShowUI:
         self._progress_bar["value"] = 0
         self._time_label.config(text=f"0:00 / {dur_str}")
         self._play_btn.config(state=tk.NORMAL)
+
+        # Load notes into piano roll
+        if hasattr(self, "_piano_roll"):
+            self._piano_roll.set_data(data.notes, data.total_duration)
+
+        # Refresh track filter
+        self._refresh_track_list()
+
+    def _load_file(self):
+        path = filedialog.askopenfilename(
+            title=_tr("dialog.select_midi"),
+            filetypes=[
+                (_tr("dialog.midi_files"), "*.mid *.midi"),
+                (_tr("dialog.all_files"), "*.*"),
+            ],
+        )
+        if not path:
+            return
+
+        data = parse_midi(path)
+        if data is None:
+            self._status_var.set(_trf("status.load_failed", path=path))
+            return
+
+        self._apply_loaded_midi(data, path)
         self._status_var.set(
-            _trf("status.loaded", filename=filename, count=len(data.notes))
+            _trf(
+                "status.loaded", filename=os.path.basename(path), count=len(data.notes)
+            )
         )
 
     def _play(self):
@@ -554,6 +732,9 @@ class MidiShowUI:
         self._osc.all_notes_off()
 
         self._engine.stop()
+        # Reset piano roll
+        if hasattr(self, "_piano_roll"):
+            self._piano_roll.update_playback(0, {})
         self._play_btn.config(state=tk.NORMAL)
         self._pause_btn.config(text=_tr("btn.pause_text"), state=tk.DISABLED)
         self._stop_btn.config(state=tk.DISABLED)
@@ -563,6 +744,156 @@ class MidiShowUI:
             tot_str = f"{int(dur // 60)}:{int(dur % 60):02d}"
             self._time_label.config(text=f"0:00 / {tot_str}")
         self._status_var.set(_tr("status.stopped"))
+
+    # ===================== Track Filter =====================
+
+    def _refresh_track_list(self):
+        """Rebuild the track filter rows in the Track Filter tab."""
+        # Clear existing rows
+        for row in self._track_rows:
+            row["frame"].destroy()
+        self._track_rows.clear()
+        self._track_placeholder.pack_forget()
+
+        if self._data is None or not self._data.track_names:
+            self._track_placeholder.pack(fill=tk.BOTH, expand=True, pady=20)
+            return
+
+        # Header row
+        hdr = ttk.Frame(self._track_inner)
+        hdr.pack(fill=tk.X, pady=(0, 4))
+        tk.Label(
+            hdr, text="#", font=("Segoe UI", 9, "bold"), width=3, anchor=tk.W
+        ).pack(side=tk.LEFT, padx=(0, 4))
+        tk.Label(
+            hdr,
+            text=_tr("track.column_name"),
+            font=("Segoe UI", 9, "bold"),
+            width=20,
+            anchor=tk.W,
+        ).pack(side=tk.LEFT, padx=4)
+        tk.Label(
+            hdr,
+            text=_tr("track.column_notes"),
+            font=("Segoe UI", 9, "bold"),
+            width=10,
+            anchor=tk.W,
+        ).pack(side=tk.LEFT, padx=4)
+        tk.Label(
+            hdr,
+            text=_tr("track.mute"),
+            font=("Segoe UI", 9, "bold"),
+            width=4,
+            anchor=tk.CENTER,
+        ).pack(side=tk.LEFT, padx=4)
+        tk.Label(
+            hdr,
+            text=_tr("track.solo"),
+            font=("Segoe UI", 9, "bold"),
+            width=4,
+            anchor=tk.CENTER,
+        ).pack(side=tk.LEFT, padx=4)
+        ttk.Separator(self._track_inner, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=2)
+
+        muted = set(self._engine.muted_tracks)
+        soloed = set(self._engine.solo_tracks)
+        any_solo = bool(soloed)
+
+        for idx, name in enumerate(self._data.track_names):
+            row_frame = ttk.Frame(self._track_inner)
+            row_frame.pack(fill=tk.X, pady=1)
+
+            # Track number
+            tk.Label(row_frame, text=str(idx + 1), width=3, anchor=tk.W).pack(
+                side=tk.LEFT, padx=(0, 4)
+            )
+            # Track name
+            tk.Label(
+                row_frame,
+                text=name or f"Track {idx + 1}",
+                width=20,
+                anchor=tk.W,
+                font=("Segoe UI", 9),
+            ).pack(side=tk.LEFT, padx=4)
+            # Note count
+            note_count = sum(1 for n in self._data.notes if n.track == idx)
+            tk.Label(
+                row_frame,
+                text=str(note_count),
+                width=10,
+                anchor=tk.W,
+                foreground="#666",
+            ).pack(side=tk.LEFT, padx=4)
+
+            # Mute button (toggle)
+            is_muted = idx in muted
+            mute_btn = tk.Button(
+                row_frame,
+                text="M",
+                width=3,
+                font=("Segoe UI", 8, "bold"),
+                relief=tk.SUNKEN if is_muted else tk.RAISED,
+                bg="#ffcccc" if is_muted else "#e0e0e0",
+                command=lambda i=idx: self._toggle_track_mute(i),
+            )
+            mute_btn.pack(side=tk.LEFT, padx=4)
+
+            # Solo button (toggle)
+            is_soloed = idx in soloed
+            solo_btn = tk.Button(
+                row_frame,
+                text="S",
+                width=3,
+                font=("Segoe UI", 8, "bold"),
+                relief=tk.SUNKEN if is_soloed else tk.RAISED,
+                bg="#ccffcc" if is_soloed else "#e0e0e0",
+                command=lambda i=idx: self._toggle_track_solo(i),
+            )
+            solo_btn.pack(side=tk.LEFT, padx=4)
+
+            self._track_rows.append(
+                {
+                    "frame": row_frame,
+                    "mute_btn": mute_btn,
+                    "solo_btn": solo_btn,
+                    "idx": idx,
+                }
+            )
+
+        # Show solo indicator if any track is soloed
+        if any_solo:
+            solo_note = ttk.Label(
+                self._track_inner,
+                text=_tr("track.solo_active"),
+                foreground="#2a7f2a",
+                font=("Segoe UI", 8, "italic"),
+            )
+            solo_note.pack(anchor=tk.W, pady=(4, 0))
+            self._track_solo_note = solo_note
+        else:
+            if hasattr(self, "_track_solo_note"):
+                self._track_solo_note.destroy()
+                del self._track_solo_note
+
+    def _toggle_track_mute(self, track_idx: int):
+        """Toggle mute state for a track."""
+        muted = set(self._engine.muted_tracks)
+        if track_idx in muted:
+            muted.discard(track_idx)
+        else:
+            muted.add(track_idx)
+        self._engine.muted_tracks = muted
+        self._refresh_track_list()
+
+    def _toggle_track_solo(self, track_idx: int):
+        """Toggle solo state for a track."""
+        soloed = set(self._engine.solo_tracks)
+        if track_idx in soloed:
+            soloed.discard(track_idx)
+        else:
+            soloed.add(track_idx)
+        self._engine.solo_tracks = soloed
+        self._refresh_track_list()
 
     def _on_speed_change(self):
         try:
@@ -589,34 +920,30 @@ class MidiShowUI:
         if not was_playing:
             self._engine.pause()  # keep paused if user was dragging while stopped/paused
 
+    def _update_progress_preview(self, event) -> float | None:
+        """Update progress bar visual from click/drag event. Returns ratio or None."""
+        if self._data is None:
+            return None
+        w = event.widget.winfo_width()
+        if w <= 0:
+            return None
+        total = self._engine.total_duration
+        ratio = event.x / w
+        target = max(0.0, min(total, ratio * total))
+        self._progress_bar["value"] = target
+        cur_str = f"{int(target // 60)}:{int(target % 60):02d}"
+        tot_str = f"{int(total // 60)}:{int(total % 60):02d}"
+        self._time_label.config(text=f"{cur_str} / {tot_str}")
+        return ratio
+
     def _on_progress_click(self, event):
         """Click on progress bar — visual-only update, actual seek on release."""
-        if self._data is None:
-            return
-        w = event.widget.winfo_width()
-        if w > 0:
-            total = self._engine.total_duration
-            ratio = event.x / w
-            target = max(0.0, min(total, ratio * total))
-            self._progress_bar["value"] = target
-            cur_str = f"{int(target // 60)}:{int(target % 60):02d}"
-            tot_str = f"{int(total // 60)}:{int(total % 60):02d}"
-            self._time_label.config(text=f"{cur_str} / {tot_str}")
+        self._update_progress_preview(event)
 
     def _on_progress_drag(self, event):
         """Drag on progress bar — visual-only update, actual seek on release."""
-        if self._data is None:
-            return
-        w = event.widget.winfo_width()
-        if w > 0:
-            total = self._engine.total_duration
-            ratio = event.x / w
-            target = max(0.0, min(total, ratio * total))
-            self._progress_bar["value"] = target
-            cur_str = f"{int(target // 60)}:{int(target % 60):02d}"
-            tot_str = f"{int(total // 60)}:{int(total % 60):02d}"
-            self._time_label.config(text=f"{cur_str} / {tot_str}")
-        self._status_var.set(_tr("status.seeking"))
+        if self._update_progress_preview(event) is not None:
+            self._status_var.set(_tr("status.seeking"))
 
     def _on_progress_release(self, event):
         if self._data is None:
@@ -765,31 +1092,85 @@ class MidiShowUI:
 
     # ===================== Engine callbacks =====================
 
+    def _on_volume_change(self, value):
+        volume = float(value)
+        self._settings.volume = volume
+        pct = int(volume * 100)
+        self._volume_label_var.set(f"{pct}%")
+        self._volume_spin_var.set(str(pct))
+
+    def _on_volume_trough_click(self, event):
+        """Handle mouse press on volume scale (both trough and thumb).
+        Completely takes over the native handler so that drag works
+        consistently whether the user first clicks trough or thumb."""
+        w = event.widget.winfo_width()
+        if w <= 0:
+            return "break"
+        ratio = max(0.0, min(1.0, event.x / w))
+        self._volume_var.set(ratio)
+        self._on_volume_change(ratio)
+        return "break"  # Prevent native handler — we manage everything
+
+    def _on_volume_drag(self, event):
+        """Handle mouse drag on volume scale after initial Button-1."""
+        w = event.widget.winfo_width()
+        if w <= 0:
+            return "break"
+        ratio = max(0.0, min(1.0, event.x / w))
+        self._volume_var.set(ratio)
+        self._on_volume_change(ratio)
+        return "break"
+
+    def _on_volume_spin_change(self):
+        """Handle volume change from Spinbox arrows or Enter key."""
+        self._apply_volume_spin_value()
+
+    def _on_volume_spin_event(self, event=None):
+        """Handle Enter key or focus out on the volume Spinbox."""
+        self._apply_volume_spin_value()
+
+    def _apply_volume_spin_value(self):
+        """Read Spinbox value and apply to volume."""
+        try:
+            pct = int(self._volume_spin_var.get())
+            pct = max(0, min(100, pct))
+            volume = pct / 100.0
+            self._volume_var.set(volume)
+            self._on_volume_change(volume)
+        except (ValueError, tk.TclError):
+            # Revert to current volume
+            self._volume_spin_var.set(str(int(self._settings.volume * 100)))
+
+    def _get_scaled_velocity(self, velocity: int) -> int:
+        """Scale MIDI velocity (0-127) by current volume setting."""
+        scaled = int(round(velocity * self._settings.volume))
+        return max(0, min(127, scaled))
+
+    def _dispatch_note_to_outputs(
+        self, method: str, note: int, velocity: int, channel: int
+    ):
+        """Dispatch a note event to all enabled outputs."""
+        for out in (self._local_synth, self._virtual_midi, self._osc):
+            if out.enabled:
+                getattr(out, method)(note, velocity, channel)
+
     def _on_note_on(self, note_event):
         self._note_on_count += 1
-        if self._local_synth.enabled:
-            self._local_synth.note_on(
-                note_event.note, note_event.velocity, note_event.channel
-            )
-        if self._virtual_midi.enabled:
-            self._virtual_midi.note_on(
-                note_event.note, note_event.velocity, note_event.channel
-            )
-        if self._osc.enabled:
-            self._osc.note_on(note_event.note, note_event.velocity, note_event.channel)
+        vel = self._get_scaled_velocity(note_event.velocity)
+        transpose = self._settings.playback_transpose
+        self._dispatch_note_to_outputs(
+            "note_on", note_event.note + transpose, vel, note_event.channel
+        )
 
     def _on_note_off(self, note_event):
         self._note_off_count += 1
-        if self._local_synth.enabled:
-            self._local_synth.note_off(
-                note_event.note, note_event.velocity, note_event.channel
-            )
-        if self._virtual_midi.enabled:
-            self._virtual_midi.note_off(
-                note_event.note, note_event.velocity, note_event.channel
-            )
-        if self._osc.enabled:
-            self._osc.note_off(note_event.note, note_event.velocity, note_event.channel)
+        transpose = self._settings.playback_transpose
+        self._dispatch_note_to_outputs(
+            "note_off",
+            note_event.note + transpose,
+            note_event.velocity,
+            note_event.channel,
+        )
 
     def _on_finish(self):
         self.root.after(0, self._on_finish_ui)
@@ -838,21 +1219,32 @@ class MidiShowUI:
             self._passthrough_status_var.set("")
             self._status_var.set(_tr("status.passthrough_off"))
 
+    # ===================== Transpose handlers =====================
+
+    def _on_playback_transpose_change(self):
+        """Called when playback transpose spinbox changes via buttons."""
+        self._settings.playback_transpose = self._playback_transpose_var.get()
+
+    def _on_playback_transpose_event(self, event=None):
+        """Called when playback transpose spinbox is edited manually."""
+        self._settings.playback_transpose = self._playback_transpose_var.get()
+
+    def _on_midi_input_transpose_change(self):
+        """Called when MIDI input transpose spinbox changes via buttons."""
+        self._settings.midi_input_transpose = self._midi_input_transpose_var.get()
+
+    def _on_midi_input_transpose_event(self, event=None):
+        """Called when MIDI input transpose spinbox is edited manually."""
+        self._settings.midi_input_transpose = self._midi_input_transpose_var.get()
+
     def _on_midi_input_note_on(self, note: int, velocity: int, channel: int):
-        if self._local_synth.enabled:
-            self._local_synth.note_on(note, velocity, channel)
-        if self._virtual_midi.enabled:
-            self._virtual_midi.note_on(note, velocity, channel)
-        if self._osc.enabled:
-            self._osc.note_on(note, velocity, channel)
+        vel = self._get_scaled_velocity(velocity)
+        transpose = self._settings.midi_input_transpose
+        self._dispatch_note_to_outputs("note_on", note + transpose, vel, channel)
 
     def _on_midi_input_note_off(self, note: int, velocity: int, channel: int):
-        if self._local_synth.enabled:
-            self._local_synth.note_off(note, velocity, channel)
-        if self._virtual_midi.enabled:
-            self._virtual_midi.note_off(note, velocity, channel)
-        if self._osc.enabled:
-            self._osc.note_off(note, velocity, channel)
+        transpose = self._settings.midi_input_transpose
+        self._dispatch_note_to_outputs("note_off", note + transpose, velocity, channel)
 
     # ===================== Library management =====================
 
@@ -969,34 +1361,13 @@ class MidiShowUI:
             self._status_var.set(_trf("status.load_failed", path=path))
             return
 
-        self._data = data
-        self._engine.load(data)
-
-        self._note_on_count = 0
-        self._note_off_count = 0
-
-        filename = os.path.basename(path)
-        self._file_label.config(text=filename)
-        self._title_label.config(text=data.title)
-
-        dur = data.total_duration
-        dur_str = f"{int(dur // 60)}:{int(dur % 60):02d}"
-        self._note_count_var.set(
-            _trf(
-                "note_count.format",
-                count=len(data.notes),
-                tracks=len(data.track_names),
-                dur=dur_str,
-                bpm=f"{data.bpm:.0f}",
-            )
-        )
-
-        self._progress_bar["maximum"] = data.total_duration
-        self._progress_bar["value"] = 0
-        self._time_label.config(text=f"0:00 / {dur_str}")
-        self._play_btn.config(state=tk.NORMAL)
+        self._apply_loaded_midi(data, path)
 
     # ===================== Timer for progress =====================
+
+    def _toggle_piano(self):
+        """Toggle piano roll visualization on/off."""
+        pass  # Controlled by _update_timer's conditional check
 
     def _update_timer(self):
         if self._engine.is_playing and not self._engine.is_paused:
@@ -1007,6 +1378,13 @@ class MidiShowUI:
                 cur_str = f"{int(current // 60)}:{int(current % 60):02d}"
                 tot_str = f"{int(total // 60)}:{int(total % 60):02d}"
                 self._time_label.config(text=f"{cur_str} / {tot_str}")
+                # Update piano roll if enabled
+                if (
+                    hasattr(self, "_piano_enabled_var")
+                    and self._piano_enabled_var.get()
+                ):
+                    active = self._engine.get_active_notes()
+                    self._piano_roll.update_playback(current, active)
         self._update_id = self.root.after(50, self._update_timer)
 
     # ===================== Run =====================
@@ -1053,6 +1431,20 @@ class MidiShowUI:
             pass
         self._settings.midi_input_enabled = self._midi_input.enabled
         self._settings.midi_input_port = self._midi_input_port_var.get()
+        self._settings.playback_transpose = self._playback_transpose_var.get()
+        self._settings.midi_input_transpose = self._midi_input_transpose_var.get()
+        self._settings.volume = float(self._volume_var.get())
+
+    def _on_engine_update(self, current_time: float):
+        """Called periodically from the engine thread (~100ms) to update progress.
+
+        Uses ``root.after(0, ...)`` to safely schedule the UI update on the
+        main thread, keeping the progress bar smooth during long silent gaps.
+        """
+        try:
+            self.root.after(0, self._update_timer)
+        except tk.TclError:
+            pass  # window was destroyed
 
     def run(self):
         self.root.mainloop()

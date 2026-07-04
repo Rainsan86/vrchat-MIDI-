@@ -30,6 +30,9 @@ class AppSettings:
     # Playback speed
     speed: float = 1.0
 
+    # Global volume (0.0 = muted, 1.0 = full)
+    volume: float = 1.0
+
     # Output states
     local_audio_enabled: bool = True
     virtual_midi_enabled: bool = False
@@ -46,6 +49,10 @@ class AppSettings:
     # MIDI Input
     midi_input_enabled: bool = False
     midi_input_port: str = ""
+
+    # Transpose (semitones, -12 .. +12)
+    midi_input_transpose: int = 0
+    playback_transpose: int = 0
 
 
 def load_settings() -> AppSettings:

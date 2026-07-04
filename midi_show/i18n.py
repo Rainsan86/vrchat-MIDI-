@@ -28,7 +28,25 @@ _TRANSLATIONS: Dict[str, Tuple[str, str]] = {
     ),
     # ── Tabs ──
     "tab.output": ("Output Settings", "输出设置"),
+    "tab.track_filter": ("Track Filter", "轨道滤波器"),
     "tab.how_to_use": ("How to Use", "使用帮助"),
+    "tab.piano_roll": ("Piano Roll", "钢琴卷帘"),
+    # ── Track Filter ──
+    "track.no_tracks": (
+        "Load a MIDI file to see tracks here.",
+        "加载 MIDI 文件后在此显示轨道。",
+    ),
+    "track.mute": ("M", "M"),
+    "track.solo": ("S", "S"),
+    "track.unmute": ("Unmute", "取消静音"),
+    "track.unsolo": ("Unsolo", "取消独奏"),
+    "track.solo_active": (
+        "Solo mode: only soloed tracks will play",
+        "独奏模式：仅播放选了独奏的轨道",
+    ),
+    "track.num_notes": ("{n} notes", "{n} 个音符"),
+    "track.column_name": ("Track Name", "轨道名称"),
+    "track.column_notes": ("Notes", "音符数"),
     # ── Output: Local Audio ──
     "output.local_audio": (
         "Local Audio (Windows Synthesizer)",
@@ -42,6 +60,9 @@ _TRANSLATIONS: Dict[str, Tuple[str, str]] = {
     "output.port": ("Port:", "端口:"),
     "output.refresh": ("Refresh", "刷新"),
     "output.apply": ("Apply", "应用"),
+    # ── Output: Volume ──
+    "output.volume": ("Volume:", "音量:"),
+    "output.volume_muted": ("Muted", "已静音"),
     # ── Output: OSC ──
     "output.osc": (
         "OSC Output (for VRChat Avatar)",
@@ -160,6 +181,33 @@ _TRANSLATIONS: Dict[str, Tuple[str, str]] = {
         "Live forwarding to all outputs",
         "实时转发到所有输出",
     ),
+    # ── MIDI Input Transpose ──
+    "midi.input_transpose": (
+        "Input Transpose:",
+        "输入移调:",
+    ),
+    "midi.input_transpose_hint": (
+        "Shift MIDI input notes by ±{n} semitones",
+        "将 MIDI 输入音符移调 ±{n} 个半音",
+    ),
+    # ── Playback Transpose ──
+    "playback.transpose": (
+        "Transpose:",
+        "移调:",
+    ),
+    "playback.transpose_hint": (
+        "Shift playback notes by ±{n} semitones",
+        "将播放音符移调 ±{n} 个半音",
+    ),
+    "status.transpose_set": (
+        "Playback transpose: {n} semitones",
+        "播放移调: {n} 个半音",
+    ),
+    "status.midi_input_transpose_set": (
+        "MIDI input transpose: {n} semitones",
+        "MIDI 输入移调: {n} 个半音",
+    ),
+    "label.semitones": ("st", "半音"),
     # ── Note count display ──
     "note_count.format": (
         "Notes: {count} | Tracks: {tracks} | Duration: {dur} | Tempo: {bpm} BPM",

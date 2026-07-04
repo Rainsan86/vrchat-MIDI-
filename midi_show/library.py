@@ -76,16 +76,28 @@ class LibraryManager:
             return None
 
         self._entries.append(entry)
+        self._dirty = True
         self._save()
         return entry
 
     def add_files(self, paths: list[str]) -> list[LibraryEntry]:
-        """Batch-add multiple files. Returns list of successfully added entries."""
+        """Batch-add multiple files. Returns list of successfully added entries.
+
+        Only persists to disk once after all files are added.
+        """
         added: list[LibraryEntry] = []
         for p in paths:
-            entry = self.add_file(p)
+            p = os.path.abspath(p)
+            # Dedup by path
+            if any(e.path == p for e in self._entries):
+                logger.info("Library duplicate ignored: %s", p)
+                continue
+            entry = self._build_entry(p)
             if entry is not None:
+                self._entries.append(entry)
                 added.append(entry)
+        if added:
+            self._save()
         return added
 
     def remove(self, path: str) -> bool:
@@ -93,6 +105,7 @@ class LibraryManager:
         for i, e in enumerate(self._entries):
             if e.path == path:
                 self._entries.pop(i)
+                self._dirty = True
                 self._save()
                 return True
         return False
@@ -101,6 +114,7 @@ class LibraryManager:
         """Remove an entry by list index."""
         if 0 <= index < len(self._entries):
             self._entries.pop(index)
+            self._dirty = True
             self._save()
             return True
         return False
@@ -120,6 +134,7 @@ class LibraryManager:
     def clear(self):
         """Remove all entries."""
         self._entries.clear()
+        self._dirty = True
         self._save()
 
     # ------------------------------------------------------------------
