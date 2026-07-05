@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import threading
 import time as time_module
-from typing import Callable, Optional, Set
+from typing import Callable, Optional
 
 from .midi_parser import MidiData, NoteEvent
 
@@ -38,12 +38,6 @@ class PlaybackEngine:
         self._muted_tracks: set[int] = set()
         self._solo_tracks: set[int] = set()
         self._track_filter_lock = threading.Lock()
-
-        # Active note tracking for piano roll visualization
-        self._sounding_notes: dict[
-            tuple[int, int], list[NoteEvent]
-        ] = {}  # (note, channel) -> list of NoteEvent
-        self._sounding_lock = threading.Lock()
 
         # Wall-clock tracking for smooth progress
         self._wall_start: float = 0.0
@@ -81,8 +75,15 @@ class PlaybackEngine:
             self._solo_tracks = set(value)
 
     def _is_track_active(self, track_idx: int) -> bool:
-        """Check if a track should be heard considering mute/solo state."""
+        """Check if a track should be heard considering mute/solo state.
+        
+        Notes with track == -1 are "unattached" (parser couldn't determine
+        their original track) and are always audible regardless of filtering.
+        """
         with self._track_filter_lock:
+            # Unattached/unclosed notes are always audible
+            if track_idx < 0:
+                return True
             if track_idx in self._muted_tracks:
                 return False
             if self._solo_tracks:
@@ -120,8 +121,6 @@ class PlaybackEngine:
         """Load MIDI data for playback."""
         self._data = data
         self._current_time = 0.0
-        with self._sounding_lock:
-            self._sounding_notes.clear()
 
     def set_speed(self, speed: float):
         """Set playback speed multiplier (0.25 - 4.0).
@@ -186,8 +185,6 @@ class PlaybackEngine:
             self._is_playing = False
             self._is_paused = False
             self._current_time = 0.0
-            with self._sounding_lock:
-                self._sounding_notes.clear()
 
     def seek(self, position: float):
         """Seek to a specific time position in seconds.
@@ -225,15 +222,6 @@ class PlaybackEngine:
     def total_duration(self) -> float:
         return self._data.total_duration if self._data else 0.0
 
-    def get_active_notes(self) -> dict[int, list[NoteEvent]]:
-        """Return a shallow copy of currently sounding notes grouped by note number.
-        Returns dict: note_number -> list of NoteEvent"""
-        with self._sounding_lock:
-            result: dict[int, list[NoteEvent]] = {}
-            for (note_num, channel), events in self._sounding_notes.items():
-                result[note_num] = list(events)
-            return result
-
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
@@ -258,10 +246,13 @@ class PlaybackEngine:
         return self._is_track_active(note.track)
 
     def _send_all_notes_off(self, notes: list[NoteEvent]):
-        """Send note_off for every note currently sounding."""
+        """Send note_off for every note currently sounding.
+        
+        Does NOT filter by track activity — notes that were started (even on a
+        formerly-active track that later got muted) must be properly closed to
+        prevent hanging notes.
+        """
         for note in notes:
-            if not self._is_note_active(note):
-                continue
             if note.start_time <= self._current_time < note.end_time:
                 if self._on_note_off:
                     self._on_note_off(note)
@@ -270,8 +261,10 @@ class PlaybackEngine:
         self, note: NoteEvent, is_note_on: bool, all_note_offs: set
     ) -> None:
         """Dispatch a note_on or note_off event, respecting seek-time note state."""
-        # Track filtering: skip muted/solo-filtered tracks
-        if not self._is_track_active(note.track):
+        # Track filtering: only filter note_on events.
+        # note_off must always go through so we don't hang notes when
+        # a track is muted/solo-excluded *during* playback.
+        if is_note_on and not self._is_track_active(note.track):
             return
 
         if (note.note, note.channel) in all_note_offs and is_note_on:
@@ -279,31 +272,12 @@ class PlaybackEngine:
             all_note_offs.discard((note.note, note.channel))
             if self._on_note_on:
                 self._on_note_on(note)
-            with self._sounding_lock:
-                key = (note.note, note.channel)
-                if key not in self._sounding_notes:
-                    self._sounding_notes[key] = []
-                self._sounding_notes[key].append(note)
         elif is_note_on:
             if self._on_note_on:
                 self._on_note_on(note)
-            with self._sounding_lock:
-                key = (note.note, note.channel)
-                if key not in self._sounding_notes:
-                    self._sounding_notes[key] = []
-                self._sounding_notes[key].append(note)
         else:
             if self._on_note_off:
                 self._on_note_off(note)
-            with self._sounding_lock:
-                key = (note.note, note.channel)
-                if key in self._sounding_notes:
-                    try:
-                        self._sounding_notes[key].remove(note)
-                    except ValueError:
-                        pass
-                    if not self._sounding_notes[key]:
-                        del self._sounding_notes[key]
 
     def _wait_for_next_event(
         self,
@@ -367,7 +341,6 @@ class PlaybackEngine:
             return
 
         notes = self._data.notes
-        notes.sort(key=lambda x: x.start_time)
 
         # Separate note-on and note-off events into a unified timeline
         events: list[tuple[float, bool, NoteEvent]] = []

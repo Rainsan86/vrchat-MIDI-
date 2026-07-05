@@ -30,7 +30,6 @@ _TRANSLATIONS: Dict[str, Tuple[str, str]] = {
     "tab.output": ("Output Settings", "输出设置"),
     "tab.track_filter": ("Track Filter", "轨道滤波器"),
     "tab.how_to_use": ("How to Use", "使用帮助"),
-    "tab.piano_roll": ("Piano Roll", "钢琴卷帘"),
     # ── Track Filter ──
     "track.no_tracks": (
         "Load a MIDI file to see tracks here.",
@@ -99,6 +98,11 @@ _TRANSLATIONS: Dict[str, Tuple[str, str]] = {
     "dialog.select_midi": ("Select MIDI file", "选择 MIDI 文件"),
     "dialog.midi_files": ("MIDI files", "MIDI 文件"),
     "dialog.all_files": ("All files", "所有文件"),
+    "dialog.playback_in_progress": ("Please Stop Playback", "请先停止播放"),
+    "dialog.switch_lang_stop_playback": (
+        "Please stop the song before switching language.",
+        "请先停止歌曲，再进行语言切换。",
+    ),
     # ── Status: initial ready ──
     "status.ready_short": ("Ready", "就绪"),
     # ── Library tab ──

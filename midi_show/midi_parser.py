@@ -40,11 +40,61 @@ class MidiData:
 def _clean_midi_name(raw: str) -> str:
     """Clean a MIDI text field (track/instrument name) for display.
 
-    Removes non-printable characters while preserving CJK and other Unicode.
+    Recovers text from common encodings (UTF-8, GBK, Shift-JIS, Big5, EUC-KR)
+    that was mis-decoded as Latin-1 by mido's default reader.
+    Removes remaining non-printable characters.
     """
     if not isinstance(raw, str):
         return ""
-    cleaned = "".join(c if c.isprintable() or c in " -_" else "" for c in raw)
+
+    # Recover original bytes: mido decodes MIDI text meta events as
+    # Latin-1, so each character's code point == original byte value.
+    try:
+        raw_bytes = raw.encode('latin-1')
+    except (UnicodeEncodeError, ValueError):
+        return _filter_midi_text(raw)
+
+    # Try common encodings in order of likelihood.
+    # Accept the first result that doesn't contain replacement chars
+    # or excessive control characters.
+    for encoding in ('utf-8', 'gbk', 'shift-jis', 'big5', 'euc-kr', 'gb2312', 'gb18030'):
+        try:
+            recovered = raw_bytes.decode(encoding)
+        except (UnicodeDecodeError, ValueError):
+            continue
+        if _looks_reasonable(recovered):
+            return _filter_midi_text(recovered)
+
+    # Fallback: strip non-printable chars from the original Latin-1 string
+    return _filter_midi_text(raw)
+
+
+def _looks_reasonable(text: str) -> bool:
+    """Heuristic: the decoded text should have few garbage characters.
+
+    Replacement char (U+FFFD), C0/C1 control chars are signs of wrong encoding.
+    """
+    bad_count = 0
+    for c in text:
+        cp = ord(c)
+        # Replacement character
+        if cp == 0xFFFD:
+            bad_count += 1
+        # C0 control codes (except common ones like TAB, LF, CR)
+        elif 0x00 <= cp <= 0x08 or 0x0B <= cp <= 0x0C or 0x0E <= cp <= 0x1F:
+            bad_count += 1
+        # C1 control codes (DEL + high control chars)
+        elif 0x7F <= cp <= 0x9F:
+            bad_count += 1
+    return bad_count / max(len(text), 1) < 0.3
+
+
+def _filter_midi_text(text: str) -> str:
+    """Remove non-printable characters from MIDI text fields."""
+    cleaned = "".join(
+        c if c.isprintable() or c in " \t_-" or ord(c) > 126 else ""
+        for c in text
+    )
     return cleaned.strip()
 
 

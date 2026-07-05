@@ -5,12 +5,11 @@ from __future__ import annotations
 import logging
 import os
 import tkinter as tk
-from tkinter import filedialog, ttk
+from tkinter import filedialog, messagebox, ttk
 from typing import Optional
 
 from .midi_parser import MidiData, parse_midi
 from .engine import PlaybackEngine
-from .piano_roll import PianoRoll
 from .outputs import LocalSynthOutput, VirtualMidiOutput, OscOutput, MidiInput
 from .library import LibraryManager
 from .i18n import tr as _tr, trf as _trf, set_language, get_language
@@ -564,6 +563,8 @@ class MidiShowUI:
         self._track_rows: list[
             dict
         ] = []  # list of dicts: frame, name_label, notes_label, mute_btn, solo_btn
+        self._track_header: Optional[ttk.Frame] = None
+        self._track_separator: Optional[ttk.Separator] = None
 
         # Placeholder when no file loaded
         self._track_placeholder = ttk.Label(
@@ -594,24 +595,6 @@ class MidiShowUI:
             font=("Segoe UI", 9, "italic"),
             foreground="#555",
         ).pack(side=tk.LEFT, padx=8)
-
-        # -- Piano Roll tab --
-        piano_frame = ttk.Frame(nb, padding=0)
-        nb.add(piano_frame, text=_tr("tab.piano_roll") + " [测试]")
-
-        self._piano_roll = PianoRoll(piano_frame, height=300)
-        self._piano_roll.pack(fill=tk.BOTH, expand=True)
-
-        # Enable/disable checkbox
-        piano_ctrl_frame = ttk.Frame(piano_frame, padding=(4, 2, 4, 4))
-        piano_ctrl_frame.pack(fill=tk.X)
-        self._piano_enabled_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(
-            piano_ctrl_frame,
-            text=_tr("output.local_audio"),
-            variable=self._piano_enabled_var,
-            command=self._toggle_piano,
-        ).pack(side=tk.LEFT)
 
         # -- Info tab --
         info_tab = ttk.Frame(nb, padding=10)
@@ -672,10 +655,6 @@ class MidiShowUI:
         self._time_label.config(text=f"0:00 / {dur_str}")
         self._play_btn.config(state=tk.NORMAL)
 
-        # Load notes into piano roll
-        if hasattr(self, "_piano_roll"):
-            self._piano_roll.set_data(data.notes, data.total_duration)
-
         # Refresh track filter
         self._refresh_track_list()
 
@@ -732,9 +711,6 @@ class MidiShowUI:
         self._osc.all_notes_off()
 
         self._engine.stop()
-        # Reset piano roll
-        if hasattr(self, "_piano_roll"):
-            self._piano_roll.update_playback(0, {})
         self._play_btn.config(state=tk.NORMAL)
         self._pause_btn.config(text=_tr("btn.pause_text"), state=tk.DISABLED)
         self._stop_btn.config(state=tk.DISABLED)
@@ -749,6 +725,14 @@ class MidiShowUI:
 
     def _refresh_track_list(self):
         """Rebuild the track filter rows in the Track Filter tab."""
+        # Destroy old header and separator (they accumulate on each rebuild)
+        if self._track_header is not None:
+            self._track_header.destroy()
+            self._track_header = None
+        if self._track_separator is not None:
+            self._track_separator.destroy()
+            self._track_separator = None
+
         # Clear existing rows
         for row in self._track_rows:
             row["frame"].destroy()
@@ -762,6 +746,7 @@ class MidiShowUI:
         # Header row
         hdr = ttk.Frame(self._track_inner)
         hdr.pack(fill=tk.X, pady=(0, 4))
+        self._track_header = hdr
         tk.Label(
             hdr, text="#", font=("Segoe UI", 9, "bold"), width=3, anchor=tk.W
         ).pack(side=tk.LEFT, padx=(0, 4))
@@ -793,7 +778,9 @@ class MidiShowUI:
             width=4,
             anchor=tk.CENTER,
         ).pack(side=tk.LEFT, padx=4)
-        ttk.Separator(self._track_inner, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=2)
+        sep = ttk.Separator(self._track_inner, orient=tk.HORIZONTAL)
+        sep.pack(fill=tk.X, pady=2)
+        self._track_separator = sep
 
         muted = set(self._engine.muted_tracks)
         soloed = set(self._engine.solo_tracks)
@@ -862,6 +849,9 @@ class MidiShowUI:
 
         # Show solo indicator if any track is soloed
         if any_solo:
+            # Destroy previous solo note if it exists (to avoid accumulation)
+            if hasattr(self, "_track_solo_note"):
+                self._track_solo_note.destroy()
             solo_note = ttk.Label(
                 self._track_inner,
                 text=_tr("track.solo_active"),
@@ -876,22 +866,36 @@ class MidiShowUI:
                 del self._track_solo_note
 
     def _toggle_track_mute(self, track_idx: int):
-        """Toggle mute state for a track."""
+        """Toggle mute state for a track.
+
+        Muting a track automatically removes it from solo.
+        """
         muted = set(self._engine.muted_tracks)
         if track_idx in muted:
             muted.discard(track_idx)
         else:
             muted.add(track_idx)
+            # Muting → also unsolo
+            soloed = set(self._engine.solo_tracks)
+            soloed.discard(track_idx)
+            self._engine.solo_tracks = soloed
         self._engine.muted_tracks = muted
         self._refresh_track_list()
 
     def _toggle_track_solo(self, track_idx: int):
-        """Toggle solo state for a track."""
+        """Toggle solo state for a track.
+
+        Soloing a track automatically removes it from mute.
+        """
         soloed = set(self._engine.solo_tracks)
         if track_idx in soloed:
             soloed.discard(track_idx)
         else:
             soloed.add(track_idx)
+            # Soloing → also unmute
+            muted = set(self._engine.muted_tracks)
+            muted.discard(track_idx)
+            self._engine.muted_tracks = muted
         self._engine.solo_tracks = soloed
         self._refresh_track_list()
 
@@ -964,6 +968,14 @@ class MidiShowUI:
     def _toggle_language(self):
         """Toggle between Chinese and English interface."""
         new_lang = "en" if get_language() == "zh" else "zh"
+
+        # If playback is in progress, warn user and abort switch
+        if self._engine.is_playing:
+            messagebox.showwarning(
+                title=_tr("dialog.playback_in_progress"),
+                message=_tr("dialog.switch_lang_stop_playback"),
+            )
+            return
 
         # Sync current state to settings before destroying widgets
         self._sync_settings_to_object()
@@ -1180,6 +1192,11 @@ class MidiShowUI:
         self._pause_btn.config(text=_tr("btn.pause_text"), state=tk.DISABLED)
         self._stop_btn.config(state=tk.DISABLED)
         self._status_var.set(_tr("status.finished"))
+        # Show playback completed at 100% on the progress bar
+        total = self._engine.total_duration
+        self._progress_bar["value"] = total
+        tot_str = f"{int(total // 60)}:{int(total % 60):02d}"
+        self._time_label.config(text=f"{tot_str} / {tot_str}")
 
     # ===================== MIDI Input =====================
 
@@ -1365,10 +1382,6 @@ class MidiShowUI:
 
     # ===================== Timer for progress =====================
 
-    def _toggle_piano(self):
-        """Toggle piano roll visualization on/off."""
-        pass  # Controlled by _update_timer's conditional check
-
     def _update_timer(self):
         if self._engine.is_playing and not self._engine.is_paused:
             current = self._engine.current_time
@@ -1378,13 +1391,6 @@ class MidiShowUI:
                 cur_str = f"{int(current // 60)}:{int(current % 60):02d}"
                 tot_str = f"{int(total // 60)}:{int(total % 60):02d}"
                 self._time_label.config(text=f"{cur_str} / {tot_str}")
-                # Update piano roll if enabled
-                if (
-                    hasattr(self, "_piano_enabled_var")
-                    and self._piano_enabled_var.get()
-                ):
-                    active = self._engine.get_active_notes()
-                    self._piano_roll.update_playback(current, active)
         self._update_id = self.root.after(50, self._update_timer)
 
     # ===================== Run =====================

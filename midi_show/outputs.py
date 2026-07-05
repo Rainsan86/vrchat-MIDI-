@@ -41,7 +41,7 @@ def _build_midi_msg(
         return mido.Message(
             "control_change", control=control, value=value, channel=channel
         )
-    logger.warning(f"Unrecognized MIDI message type: {msg_type}")
+    logger.warning("Unrecognized MIDI message type: %s", msg_type)
     return None
 
 
@@ -72,7 +72,7 @@ class _BaseMidiOutput:
                 self._port = None
 
     def _log_note_error(self, action: str, exc: Exception):
-        logger.debug(f"{type(self).__name__} {action} failed: {exc}")
+        logger.debug("%s %s failed: %s", type(self).__name__, action, exc)
 
     # --- Public API ---
     @property
@@ -160,17 +160,17 @@ class LocalSynthOutput(_BaseMidiOutput):
             for name in mido.get_output_names():
                 if "microsoft" in name.lower() and "wavetable" in name.lower():
                     self._port = mido.open_output(name)
-                    logger.info(f"Local synth opened: {name}")
+                    logger.info("Local synth opened: %s", name)
                     return
             # Fallback: first available output
             outputs = mido.get_output_names()
             if outputs:
                 self._port = mido.open_output(outputs[0])
-                logger.info(f"Local synth opened (fallback): {outputs[0]}")
+                logger.info("Local synth opened (fallback): %s", outputs[0])
             else:
                 logger.warning("No MIDI output ports found for local synth")
         except Exception as e:
-            logger.warning(f"Could not open local synth: {e}")
+            logger.warning("Could not open local synth: %s", e)
             self._enabled = False
 
     def get_port_name(self) -> str:
@@ -208,7 +208,7 @@ class VirtualMidiOutput(_BaseMidiOutput):
             ):
                 try:
                     self._port = mido.open_output(name)
-                    logger.info(f"Virtual MIDI port opened: {name}")
+                    logger.info("Virtual MIDI port opened: %s", name)
                     return
                 except Exception as e:
                     logger.warning(
@@ -216,7 +216,7 @@ class VirtualMidiOutput(_BaseMidiOutput):
                     )
                     return
         # Show available ports but don't auto-connect
-        logger.info(f"Virtual port '{self._port_name}' not found. Available: {outputs}")
+        logger.info("Virtual port '%s' not found. Available: %s", self._port_name, outputs)
 
     def get_available_ports(self) -> list[str]:
         return mido.get_output_names()
@@ -269,9 +269,9 @@ class OscOutput:
             from pythonosc.udp_client import SimpleUDPClient
 
             self._sender = SimpleUDPClient(self._ip, self._port)
-            logger.info(f"OSC sender opened: {self._ip}:{self._port}")
+            logger.info("OSC sender opened: %s:%s", self._ip, self._port)
         except Exception as e:
-            logger.warning(f"Could not open OSC sender: {e}")
+            logger.warning("Could not open OSC sender: %s", e)
             self._enabled = False
 
     def _close(self):
@@ -314,7 +314,7 @@ class OscOutput:
                     ch_addr = f"/avatar/parameters/note_ch{channel:02d}_{note:03d}"
                     self._sender.send(ch_addr, val)
             except Exception as e:
-                logger.debug(f"OSC note_on failed: {e}")
+                logger.debug("OSC note_on failed: %s", e)
 
     def note_off(self, note: int, velocity: int, channel: int = 0):
         if not self._enabled or self._sender is None:
@@ -328,7 +328,7 @@ class OscOutput:
                     ch_addr = f"/avatar/parameters/note_ch{channel:02d}_{note:03d}"
                     self._sender.send(ch_addr, 0.0)
             except Exception as e:
-                logger.debug(f"OSC note_off failed: {e}")
+                logger.debug("OSC note_off failed: %s", e)
 
     def all_notes_off(self):
         if not self._enabled or self._sender is None:
@@ -396,14 +396,14 @@ class MidiInput:
                     " ", ""
                 ):
                     self._port = mido.open_input(name, callback=self._on_message)
-                    logger.info(f"MIDI input opened: {name}")
+                    logger.info("MIDI input opened: %s", name)
                     return
             logger.info(
                 f"Input port '{self._port_name}' not found. "
                 f"Available inputs: {mido.get_input_names()}"
             )
         except Exception as e:
-            logger.warning(f"Could not open MIDI input: {e}")
+            logger.warning("Could not open MIDI input: %s", e)
 
     def _close(self):
         with self._lock:
@@ -430,7 +430,7 @@ class MidiInput:
                 if cb_note_off:
                     cb_note_off(msg.note, msg.velocity, msg.channel)
         except Exception as e:
-            logger.debug(f"MidiInput callback error: {e}")
+            logger.debug("MidiInput callback error: %s", e)
 
     def set_callbacks(
         self, note_on: Optional[Callable] = None, note_off: Optional[Callable] = None
