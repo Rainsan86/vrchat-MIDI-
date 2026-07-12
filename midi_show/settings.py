@@ -50,6 +50,11 @@ class AppSettings:
     midi_input_enabled: bool = False
     midi_input_port: str = ""
 
+    # Background image
+    background_image_path: str = ""
+    background_enabled: bool = False
+    background_mode: str = "cover"  # cover | contain
+
     # Transpose (semitones, -12 .. +12)
     midi_input_transpose: int = 0
     playback_transpose: int = 0

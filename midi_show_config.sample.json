@@ -15,6 +15,9 @@
   "osc_mode": "piano",
   "midi_input_enabled": false,
   "midi_input_port": "",
+  "background_image_path": "",
+  "background_enabled": false,
+  "background_mode": "cover",
   "midi_input_transpose": 0,
   "playback_transpose": 0
 }

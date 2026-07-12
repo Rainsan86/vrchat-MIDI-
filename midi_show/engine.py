@@ -12,6 +12,9 @@ from .midi_parser import MidiData, NoteEvent
 # Type alias for note event callbacks
 PlayCallback = Callable[[NoteEvent], None]
 
+# Module logger
+logger = logging.getLogger(__name__)
+
 
 class PlaybackEngine:
     """Real-time MIDI note scheduler.
@@ -34,6 +37,9 @@ class PlaybackEngine:
         self._is_playing: bool = False
         self._is_paused: bool = False
 
+        # Shared state lock (protects _is_playing, _is_paused, _current_time, wall-clock vars)
+        self._state_lock = threading.Lock()
+
         # Track filtering
         self._muted_tracks: set[int] = set()
         self._solo_tracks: set[int] = set()
@@ -46,11 +52,13 @@ class PlaybackEngine:
 
     @property
     def is_playing(self) -> bool:
-        return self._is_playing
+        with self._state_lock:
+            return self._is_playing
 
     @property
     def is_paused(self) -> bool:
-        return self._is_paused
+        with self._state_lock:
+            return self._is_paused
 
     # ---- Track filtering -----------------------------------------------------------------
 
@@ -76,7 +84,7 @@ class PlaybackEngine:
 
     def _is_track_active(self, track_idx: int) -> bool:
         """Check if a track should be heard considering mute/solo state.
-        
+
         Notes with track == -1 are "unattached" (parser couldn't determine
         their original track) and are always audible regardless of filtering.
         """
@@ -94,16 +102,17 @@ class PlaybackEngine:
     @property
     def current_time(self) -> float:
         """Current playback position based on wall clock (for smooth progress)."""
-        if self._is_playing and not self._is_paused:
-            elapsed = time_module.perf_counter() - self._wall_start - self._wall_offset
-            projected = self._start_time_sec + elapsed * self._speed
-            total = self.total_duration
-            if total > 0:
-                projected = min(projected, total)
-            # Don't return projected if it's behind event-based time
-            # (can happen during initial buffering)
-            return max(projected, self._current_time)
-        return self._current_time
+        with self._state_lock:
+            if self._is_playing and not self._is_paused:
+                elapsed = (
+                    time_module.perf_counter() - self._wall_start - self._wall_offset
+                )
+                projected = self._start_time_sec + elapsed * self._speed
+                total = self.total_duration
+                if total > 0:
+                    projected = min(projected, total)
+                return max(projected, self._current_time)
+            return self._current_time
 
     def set_callbacks(
         self,
@@ -131,15 +140,16 @@ class PlaybackEngine:
         by at most one inter-event interval, which is imperceptible.)
         """
         speed = max(0.25, min(4.0, speed))
-        if speed != self._speed:
-            old_speed = self._speed
-            self._speed = speed
-            if self._is_playing:
-                # Recalibrate wall_offset so target_wall for all remaining
-                # events stays continuous at the new speed.
-                self._wall_offset += (self._current_time - self._start_time_sec) * (
-                    1.0 / old_speed - 1.0 / speed
-                )
+        with self._state_lock:
+            if speed != self._speed:
+                old_speed = self._speed
+                self._speed = speed
+                if self._is_playing:
+                    # Recalibrate wall_offset so target_wall for all remaining
+                    # events stays continuous at the new speed.
+                    self._wall_offset += (self._current_time - self._start_time_sec) * (
+                        1.0 / old_speed - 1.0 / speed
+                    )
 
     def play(self, from_time: float = 0.0):
         """Start playback from the given time offset."""
@@ -149,15 +159,16 @@ class PlaybackEngine:
             self._stop_event.set()
             self._thread.join(timeout=5.0)
             if self._thread.is_alive():
-                logging.getLogger(__name__).warning(
+                logger.warning(
                     "Previous thread did not stop in time, continuing anyway"
                 )
-        self._is_playing = True
-        self._is_paused = False
-        self._current_time = from_time
-        self._start_time_sec = from_time
-        self._wall_start = time_module.perf_counter()
-        self._wall_offset = 0.0
+        with self._state_lock:
+            self._is_playing = True
+            self._is_paused = False
+            self._current_time = from_time
+            self._start_time_sec = from_time
+            self._wall_start = time_module.perf_counter()
+            self._wall_offset = 0.0
         self._stop_event.clear()
         self._pause_event.clear()
         self._thread = threading.Thread(target=self._run, daemon=True)
@@ -165,26 +176,36 @@ class PlaybackEngine:
 
     def pause(self):
         """Pause playback."""
-        if self._is_playing and not self._is_paused:
+        with self._state_lock:
+            if not (self._is_playing and not self._is_paused):
+                return
             self._is_paused = True
-            self._pause_event.set()
+        self._pause_event.set()
 
     def resume(self):
         """Resume from pause."""
-        if self._is_playing and self._is_paused:
+        with self._state_lock:
+            if not (self._is_playing and self._is_paused):
+                return
             self._is_paused = False
-            self._pause_event.clear()
+        self._pause_event.clear()
 
     def stop(self):
-        """Stop playback and reset."""
-        if self._is_playing:
-            self._stop_event.set()
-            self._pause_event.clear()
-            if self._thread and self._thread.is_alive():
-                self._thread.join(timeout=2.0)
+        """Stop playback and wait for thread to exit."""
+        with self._state_lock:
+            if not self._is_playing:
+                return
             self._is_playing = False
             self._is_paused = False
             self._current_time = 0.0
+        self._stop_event.set()
+        self._pause_event.clear()
+
+        # Wait for thread to exit (max 2 seconds)
+        if self._thread is not None:
+            self._thread.join(timeout=2.0)
+            if self._thread.is_alive():
+                logger.warning("Engine thread did not exit within 2 seconds")
 
     def seek(self, position: float):
         """Seek to a specific time position in seconds.
@@ -193,28 +214,33 @@ class PlaybackEngine:
         from the new position. When stopped/paused, it merely sets the
         starting position for the next play() or resume() call.
         """
-        self._current_time = max(0.0, min(position, self.total_duration))
-        if self._is_playing:
+        with self._state_lock:
+            self._current_time = max(0.0, min(position, self.total_duration))
+            was_playing = self._is_playing
             was_paused = self._is_paused
+            if was_playing:
+                self._is_playing = False
+                self._is_paused = False
+        if was_playing:
             self._stop_event.set()
             if not was_paused:
                 self._pause_event.clear()
             if self._thread and self._thread.is_alive():
                 self._thread.join(timeout=2.0)
             if self._thread and self._thread.is_alive():
-                logger = logging.getLogger(__name__)
                 logger.warning("Seek: old thread did not stop in time, may cause race")
             self._stop_event.clear()
-            self._is_playing = True
-            self._is_paused = was_paused
+            with self._state_lock:
+                self._is_playing = True
+                self._is_paused = was_paused
+                self._start_time_sec = self._current_time
+                self._wall_start = time_module.perf_counter()
+                self._wall_offset = 0.0
             # Restore pause state for the new thread
             if was_paused:
                 self._pause_event.set()
             else:
                 self._pause_event.clear()
-            self._start_time_sec = self._current_time
-            self._wall_start = time_module.perf_counter()
-            self._wall_offset = 0.0
             self._thread = threading.Thread(target=self._run, daemon=True)
             self._thread.start()
 
@@ -238,7 +264,8 @@ class PlaybackEngine:
             if self._stop_event.wait(timeout=0.05):
                 return True  # stop requested during pause
         pause_duration = time_module.perf_counter() - pause_start
-        self._wall_offset += pause_duration
+        with self._state_lock:
+            self._wall_offset += pause_duration
         return False
 
     def _is_note_active(self, note: NoteEvent) -> bool:
@@ -247,13 +274,15 @@ class PlaybackEngine:
 
     def _send_all_notes_off(self, notes: list[NoteEvent]):
         """Send note_off for every note currently sounding.
-        
+
         Does NOT filter by track activity — notes that were started (even on a
         formerly-active track that later got muted) must be properly closed to
         prevent hanging notes.
         """
+        with self._state_lock:
+            cutoff = self._current_time
         for note in notes:
-            if note.start_time <= self._current_time < note.end_time:
+            if note.start_time <= cutoff < note.end_time:
                 if self._on_note_off:
                     self._on_note_off(note)
 
@@ -400,7 +429,8 @@ class PlaybackEngine:
                 break
 
             # Update current time tracker
-            self._current_time = event_time
+            with self._state_lock:
+                self._current_time = event_time
 
             # Periodic UI update between events (catches gaps when events are sparse)
             now = time_module.perf_counter()
@@ -417,8 +447,9 @@ class PlaybackEngine:
         # Cleanup: send note_off for all held notes regardless of stop reason
         self._send_all_notes_off(notes)
 
-        self._is_playing = False
-        self._is_paused = False
+        with self._state_lock:
+            self._is_playing = False
+            self._is_paused = False
 
         # Only notify natural completion (not when stop/seek/speed-change interrupted)
         if not self._stop_event.is_set():

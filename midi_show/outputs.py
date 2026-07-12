@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import atexit
 import logging
+import queue
 import threading
+import time
 from typing import Callable, Optional
 
 import mido
@@ -192,9 +194,52 @@ class VirtualMidiOutput(_BaseMidiOutput):
 
     def __init__(self, enabled: bool = True, port_name: str = "LoopMIDI Port"):
         self._port_name = port_name
+        self._send_queue: "queue.Queue[mido.Message]" = queue.Queue(maxsize=2048)
+        self._send_thread: Optional[threading.Thread] = None
+        self._send_stop_event = threading.Event()
+        self._last_queue_full_warning = 0.0
         super().__init__(enabled)
         self._open()
         atexit.register(self._close)
+
+    def _send_worker(self):
+        while not self._send_stop_event.is_set() or not self._send_queue.empty():
+            try:
+                msg = self._send_queue.get(timeout=0.1)
+            except queue.Empty:
+                continue
+
+            try:
+                with self._lock:
+                    port = self._port
+                    if port is not None:
+                        port.send(msg)
+            except Exception as e:
+                logger.warning("Virtual MIDI send failed: %s", e)
+            finally:
+                self._send_queue.task_done()
+
+    def _start_send_thread(self):
+        if self._send_thread is not None and self._send_thread.is_alive():
+            return
+        self._send_stop_event = threading.Event()
+        self._send_thread = threading.Thread(
+            target=self._send_worker,
+            name="VirtualMidiOutputSender",
+            daemon=True,
+        )
+        self._send_thread.start()
+
+    def _enqueue_message(self, msg: Optional[mido.Message]):
+        if msg is None:
+            return
+        try:
+            self._send_queue.put_nowait(msg)
+        except queue.Full:
+            now = time.monotonic()
+            if now - self._last_queue_full_warning >= 5.0:
+                self._last_queue_full_warning = now
+                logger.warning("Virtual MIDI send queue full, dropping newest message")
 
     def _open(self):
         if not self._enabled:
@@ -207,7 +252,9 @@ class VirtualMidiOutput(_BaseMidiOutput):
                 " ", ""
             ):
                 try:
-                    self._port = mido.open_output(name)
+                    with self._lock:
+                        self._port = mido.open_output(name)
+                    self._start_send_thread()
                     logger.info("Virtual MIDI port opened: %s", name)
                     return
                 except Exception as e:
@@ -216,10 +263,59 @@ class VirtualMidiOutput(_BaseMidiOutput):
                     )
                     return
         # Show available ports but don't auto-connect
-        logger.info("Virtual port '%s' not found. Available: %s", self._port_name, outputs)
+        logger.info(
+            "Virtual port '%s' not found. Available: %s", self._port_name, outputs
+        )
+
+    def _close(self):
+        with self._lock:
+            send_thread = self._send_thread
+            self._send_thread = None
+            self._send_stop_event.set()
+
+        if send_thread is not None and send_thread.is_alive():
+            send_thread.join(timeout=1.0)
+
+        with self._lock:
+            if self._port is not None:
+                try:
+                    self._port.close()
+                except Exception:
+                    pass
+                self._port = None
+
+        while True:
+            try:
+                self._send_queue.get_nowait()
+            except queue.Empty:
+                break
+            else:
+                self._send_queue.task_done()
 
     def get_available_ports(self) -> list[str]:
         return mido.get_output_names()
+
+    def note_on(self, note: int, velocity: int, channel: int = 0):
+        if not self._enabled or self._port is None:
+            return
+        self._enqueue_message(
+            _build_midi_msg("note_on", note, velocity, channel=channel)
+        )
+
+    def note_off(self, note: int, velocity: int, channel: int = 0):
+        if not self._enabled or self._port is None:
+            return
+        self._enqueue_message(
+            _build_midi_msg("note_off", note, velocity, channel=channel)
+        )
+
+    def all_notes_off(self):
+        if self._port is None:
+            return
+        for ch in range(16):
+            self._enqueue_message(
+                _build_midi_msg("control_change", control=123, value=0, channel=ch)
+            )
 
     def set_port_name(self, name: str):
         """Change virtual port and reconnect."""

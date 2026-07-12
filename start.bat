@@ -115,7 +115,7 @@ echo [OK] 依赖安装完成
 
 :: ---- 7. 验证关键依赖可导入 ----
 echo [..] 验证关键依赖...
-"%VENV_DIR%\Scripts\python.exe" -c "import mido; import rtmidi; print('[OK] 关键依赖检查通过')"
+"%VENV_DIR%\Scripts\python.exe" -c "import mido; import rtmidi; from PIL import Image; print('[OK] 关键依赖检查通过')"
 if !ERRORLEVEL! neq 0 (
     echo.
     echo [错误] 依赖导入检查未通过。

@@ -24,6 +24,7 @@ env/
 # OS
 .DS_Store
 Thumbs.db
+nul
 
 # MIDI backup
 *.mid.bak
@@ -34,3 +35,9 @@ Thumbs.db
 # Runtime config (contains user-local paths)
 midi_show_config.json
 midi_show_library.json
+
+# Backups
+backups/
+
+# Personal notes
+存档.md

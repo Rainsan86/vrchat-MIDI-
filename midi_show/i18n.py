@@ -166,6 +166,10 @@ _TRANSLATIONS: Dict[str, Tuple[str, str]] = {
         "Virtual port set to: {name}",
         "虚拟端口已设置为: {name}",
     ),
+    "status.midi_loop_conflict": (
+        "MIDI input and virtual output cannot use the same loopMIDI port.",
+        "MIDI 输入和虚拟输出不能使用同一个 loopMIDI 端口。",
+    ),
     "status.osc_on": ("OSC output ON", "OSC 输出已开"),
     "status.osc_off": ("OSC output OFF", "OSC 输出已关"),
     "status.osc_addr_set": (
@@ -260,6 +264,51 @@ _TRANSLATIONS: Dict[str, Tuple[str, str]] = {
         "   - 你的虚拟人物需要有匹配的浮点参数\n\n"
         "4. 尝试我们的示例 VRChat 世界：\n"
         "   在 VRChat 世界菜单中搜索 'MIDI Show Piano'",
+    ),
+    # ── Background ──
+    "tab.background": (
+        "Background",
+        "背景图片",
+    ),
+    "bg.header": (
+        "Background Image",
+        "背景图片",
+    ),
+    "bg.hint": (
+        "Set a custom image as the window background.",
+        "设置一张自定义图片作为窗口背景。",
+    ),
+    "bg.enable": (
+        "Background image",
+        "背景图片",
+    ),
+    "bg.select": (
+        "Select Image...",
+        "选择图片...",
+    ),
+    "bg.clear": (
+        "Clear",
+        "清除",
+    ),
+    "bg.mode": (
+        "Display mode",
+        "显示模式",
+    ),
+    "bg.status_set": (
+        "Background: {path}",
+        "背景: {path}",
+    ),
+    "bg.status_cleared": (
+        "Background cleared",
+        "背景已清除",
+    ),
+    "bg.status_failed": (
+        "Failed to load image: {path}",
+        "图片加载失败: {path}",
+    ),
+    "dialog.image_files": (
+        "Image files",
+        "图片文件",
     ),
 }
 

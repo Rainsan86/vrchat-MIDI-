@@ -8,6 +8,8 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 from typing import Optional
 
+from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageTk
+
 from .midi_parser import MidiData, parse_midi
 from .engine import PlaybackEngine
 from .outputs import LocalSynthOutput, VirtualMidiOutput, OscOutput, MidiInput
@@ -38,6 +40,7 @@ class MidiShowUI:
         if wx >= 0 and wy >= 0:
             self.root.geometry(f"+{wx}+{wy}")
         self.root.minsize(640, 420)
+        self._setup_styles()
 
         # Save settings on close
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -59,8 +62,6 @@ class MidiShowUI:
 
         self._update_id: Optional[str] = None
         self._last_update_time: float = 0.0
-        self._note_on_count: int = 0
-        self._note_off_count: int = 0
 
         # MidiInput
         self._midi_input = MidiInput(enabled=self._settings.midi_input_enabled)
@@ -98,6 +99,15 @@ class MidiShowUI:
         self._playback_transpose_var: Optional[tk.IntVar] = None
         self._midi_input_transpose_var: Optional[tk.IntVar] = None
 
+        # Background image
+        self._bg_label: Optional[tk.Label] = None
+        self._bg_photo: Optional[ImageTk.PhotoImage] = None
+        self._bg_image_obj: Optional[Image.Image] = None
+        self._bg_enabled_var: Optional[tk.BooleanVar] = None
+        self._bg_path_var: Optional[tk.StringVar] = None
+        self._bg_mode_var: Optional[tk.StringVar] = None
+        self._bg_resize_pending: Optional[str] = None  # after id for resize throttle
+
         # Connect engine callbacks
         self._engine.set_callbacks(
             on_note_on=self._on_note_on,
@@ -109,19 +119,279 @@ class MidiShowUI:
         self._build_ui()
         self._update_timer()
 
+        # Initialize background image if enabled in settings
+        if self._settings.background_enabled and self._settings.background_image_path:
+            path = self._settings.background_image_path
+            if os.path.isfile(path):
+                self._load_and_display_background(path)
+            else:
+                logger.warning("Background image not found: %s", path)
+                self._settings.background_enabled = False
+
+        # Bind window resize event to adjust background
+        self.root.bind("<Configure>", self._resize_background_on_window_resize)
+
+    @staticmethod
+    def _fmt_time(seconds: float) -> str:
+        seconds = max(0, int(seconds))
+        return f"{seconds // 60}:{seconds % 60:02d}"
+
+    def _setup_styles(self):
+        """Apply a clean blue-white cool theme."""
+        root = self.root
+        # ── Color palette (blue-white cool) ──
+        # Window background: very light blue-white
+        BG_MAIN = "#edf5fc"  # main window bg
+        BG_PANEL = "#fbfdff"  # panel/card bg
+        BG_ENTRY = "#ffffff"  # entry / input bg
+        BTN_BG = "#ffffff"  # button normal bg
+        BTN_ACTIVE = "#d9ecff"  # button hover/active
+        BTN_PRESSED = "#bddbfd"  # button pressed
+        ACCENT = "#2b7de9"  # accent blue (text/selection)
+        ACCENT_SOFT = "#5ca6ff"  # softer accent
+        TEXT_MAIN = "#17324d"  # main text (deep blue-grey)
+        TEXT_DIM = "#6685a4"  # dim text
+        BORDER = "#d4e4f4"  # light blue border
+
+        root.configure(bg=BG_MAIN)
+
+        style = ttk.Style(self.root)
+        try:
+            style.theme_use("clam")
+        except tk.TclError:
+            pass
+
+        # General background colors for ttk widgets
+        style.configure(
+            ".", background=BG_MAIN, foreground=TEXT_MAIN, font=("Segoe UI", 10)
+        )
+        style.configure("TFrame", background=BG_MAIN)
+        style.configure("TLabel", background=BG_MAIN, foreground=TEXT_MAIN)
+        style.configure("Dim.TLabel", background=BG_MAIN, foreground=TEXT_DIM)
+        style.configure(
+            "Title.TLabel",
+            background=BG_MAIN,
+            foreground=ACCENT,
+            font=("Segoe UI", 11, "bold"),
+        )
+
+        # ── Buttons: clean white with blue accents ──
+        style.configure(
+            "TButton",
+            padding=(12, 7),
+            font=("Segoe UI", 10),
+            background=BTN_BG,
+            foreground=ACCENT,
+            borderwidth=1,
+            relief="solid",
+            bordercolor=BORDER,
+            focusthickness=0,
+            focuscolor=BTN_ACTIVE,
+        )
+        style.map(
+            "TButton",
+            background=[
+                ("active", BTN_ACTIVE),
+                ("pressed", BTN_PRESSED),
+                ("disabled", "#eef5fc"),
+            ],
+            foreground=[("disabled", "#9ab4c8")],
+            bordercolor=[("active", ACCENT_SOFT), ("pressed", ACCENT)],
+        )
+
+        # Accent (primary) button: solid blue, white text
+        style.configure(
+            "Accent.TButton",
+            padding=(14, 9),
+            font=("Segoe UI", 10, "bold"),
+            background=ACCENT,
+            foreground="#ffffff",
+            borderwidth=0,
+            relief="flat",
+            focusthickness=0,
+        )
+        style.map(
+            "Accent.TButton",
+            background=[
+                ("active", ACCENT_SOFT),
+                ("pressed", "#1659a8"),
+                ("disabled", "#9ec3e8"),
+            ],
+            foreground=[("disabled", "#ffffff")],
+        )
+        style.configure("Soft.TFrame", background=BG_PANEL)
+        style.configure("Soft.TLabelframe", background=BG_PANEL, bordercolor=BORDER)
+        style.configure(
+            "Soft.TLabelframe.Label",
+            background=BG_PANEL,
+            foreground=ACCENT,
+            font=("Segoe UI", 10, "bold"),
+        )
+
+        # ── Notebook (tabs) ──
+        style.configure("TNotebook", background=BG_MAIN, borderwidth=0)
+        style.configure(
+            "TNotebook.Tab",
+            padding=(16, 7),
+            font=("Segoe UI", 10, "bold"),
+            background=BG_PANEL,
+            foreground=TEXT_DIM,
+            borderwidth=1,
+            bordercolor=BORDER,
+        )
+        style.map(
+            "TNotebook.Tab",
+            background=[("selected", BTN_BG), ("active", BTN_ACTIVE)],
+            foreground=[("selected", ACCENT), ("active", ACCENT)],
+            bordercolor=[("selected", ACCENT_SOFT)],
+        )
+
+        # ── Progressbar ──
+        style.configure(
+            "TProgressbar",
+            thickness=10,
+            background=ACCENT,
+            troughcolor=BG_PANEL,
+            bordercolor=BORDER,
+            lightcolor=ACCENT,
+            darkcolor=ACCENT,
+        )
+
+        # ── Entry / Combobox / Spinbox ──
+        style.configure(
+            "TEntry",
+            fieldbackground=BG_ENTRY,
+            background=BG_ENTRY,
+            foreground=TEXT_MAIN,
+            borderwidth=1,
+            relief="solid",
+            bordercolor=BORDER,
+        )
+        style.map("TEntry", bordercolor=[("focus", ACCENT_SOFT)])
+        style.configure(
+            "TCombobox",
+            fieldbackground=BG_ENTRY,
+            background=BG_ENTRY,
+            foreground=TEXT_MAIN,
+            borderwidth=1,
+            relief="solid",
+            bordercolor=BORDER,
+            arrowcolor=ACCENT,
+        )
+        style.map(
+            "TCombobox",
+            fieldbackground=[("readonly", BG_ENTRY)],
+            bordercolor=[("focus", ACCENT_SOFT)],
+        )
+        style.configure(
+            "TSpinbox",
+            fieldbackground=BG_ENTRY,
+            background=BG_ENTRY,
+            foreground=TEXT_MAIN,
+            bordercolor=BORDER,
+            arrowcolor=ACCENT,
+        )
+
+        # ── Checkbutton / Radiobutton ──
+        style.configure(
+            "TCheckbutton",
+            background=BG_MAIN,
+            foreground=TEXT_MAIN,
+            indicatorcolor=BG_ENTRY,
+            focuscolor=BG_MAIN,
+        )
+        style.map(
+            "TCheckbutton",
+            background=[("active", BG_MAIN)],
+            indicatorcolor=[("selected", ACCENT), ("active", BTN_ACTIVE)],
+        )
+        style.configure(
+            "TRadiobutton",
+            background=BG_MAIN,
+            foreground=TEXT_MAIN,
+            indicatorcolor=BG_ENTRY,
+        )
+        style.map(
+            "TRadiobutton",
+            background=[("active", BG_MAIN)],
+            indicatorcolor=[("selected", ACCENT)],
+        )
+
+        # ── Scale (volume slider) ──
+        style.configure(
+            "Horizontal.TScale",
+            background=BG_MAIN,
+            troughcolor=BG_PANEL,
+            bordercolor=BORDER,
+            lightcolor=ACCENT,
+            darkcolor=ACCENT,
+        )
+
+        # ── Treeview (library) ──
+        style.configure(
+            "Treeview",
+            background=BG_ENTRY,
+            fieldbackground=BG_ENTRY,
+            foreground=TEXT_MAIN,
+            borderwidth=1,
+            relief="solid",
+            bordercolor=BORDER,
+            rowheight=26,
+        )
+        style.configure(
+            "Treeview.Heading",
+            font=("Segoe UI", 10, "bold"),
+            background=BG_PANEL,
+            foreground=ACCENT,
+            bordercolor=BORDER,
+            relief="flat",
+        )
+        style.map(
+            "Treeview",
+            background=[("selected", BTN_ACTIVE)],
+            foreground=[("selected", ACCENT)],
+        )
+        style.map("Treeview.Heading", background=[("active", BTN_ACTIVE)])
+
+        # ── Separator ──
+        style.configure("TSeparator", background=BORDER)
+
+        # ── Scrollbar ──
+        style.configure(
+            "Vertical.TScrollbar",
+            background=BG_PANEL,
+            troughcolor=BG_MAIN,
+            bordercolor=BORDER,
+            arrowcolor=ACCENT,
+        )
+        style.map("Vertical.TScrollbar", background=[("active", BTN_ACTIVE)])
+
+        # Keep references for runtime use
+        self._theme = {
+            "BG_MAIN": BG_MAIN,
+            "BG_PANEL": BG_PANEL,
+            "BG_ENTRY": BG_ENTRY,
+            "ACCENT": ACCENT,
+            "TEXT_DIM": TEXT_DIM,
+            "BORDER": BORDER,
+        }
+
     def _build_ui(self):
         root = self.root
 
         # ===================== Top: File info =====================
-        top_frame = ttk.Frame(root, padding=(10, 8, 10, 4))
+        top_frame = ttk.Frame(root, padding=(10, 8, 10, 4), style="Soft.TFrame")
         top_frame.pack(fill=tk.X)
 
-        ttk.Button(top_frame, text=_tr("btn.load_midi"), command=self._load_file).pack(
-            side=tk.LEFT, padx=(0, 8)
-        )
+        ttk.Button(
+            top_frame,
+            text=_tr("btn.load_midi"),
+            command=self._load_file,
+            style="Accent.TButton",
+        ).pack(side=tk.LEFT, padx=(0, 8))
 
         self._file_label = ttk.Label(
-            top_frame, text=_tr("label.no_file"), foreground="#888"
+            top_frame, text=_tr("label.no_file"), foreground="#5a7896"
         )
         self._file_label.pack(side=tk.LEFT, fill=tk.X, expand=True)
 
@@ -130,30 +400,34 @@ class MidiShowUI:
         ).pack(side=tk.RIGHT, padx=(4, 0))
 
         # ===================== Song info =====================
-        info_frame = ttk.Frame(root, padding=(10, 0, 10, 4))
+        info_frame = ttk.Frame(root, padding=(10, 0, 10, 4), style="Soft.TFrame")
         info_frame.pack(fill=tk.X)
 
         self._title_label = ttk.Label(
-            info_frame, text="", font=("Segoe UI", 11, "bold")
+            info_frame, text="", font=("Segoe UI", 11, "bold"), foreground="#1f7ae0"
         )
         self._title_label.pack(anchor=tk.W)
 
-        stats_frame = ttk.Frame(info_frame)
+        stats_frame = ttk.Frame(info_frame, style="Soft.TFrame")
         stats_frame.pack(anchor=tk.W, fill=tk.X)
         self._note_count_var = tk.StringVar(value=_tr("note_count.default"))
         ttk.Label(
-            stats_frame, textvariable=self._note_count_var, foreground="#666"
+            stats_frame, textvariable=self._note_count_var, foreground="#5a7896"
         ).pack(side=tk.LEFT)
 
         # ===================== Transport controls =====================
-        ctrl_frame = ttk.Frame(root, padding=(10, 4, 10, 4))
+        ctrl_frame = ttk.Frame(root, padding=(10, 4, 10, 4), style="Soft.TFrame")
         ctrl_frame.pack(fill=tk.X)
 
-        btn_frame = ttk.Frame(ctrl_frame)
+        btn_frame = ttk.Frame(ctrl_frame, style="Soft.TFrame")
         btn_frame.pack()
 
         self._play_btn = ttk.Button(
-            btn_frame, text=_tr("btn.play"), command=self._play, width=10
+            btn_frame,
+            text=_tr("btn.play"),
+            command=self._play,
+            width=10,
+            style="Accent.TButton",
         )
         self._play_btn.pack(side=tk.LEFT, padx=2)
 
@@ -221,7 +495,7 @@ class MidiShowUI:
         ttk.Label(ctrl_frame, text=_tr("label.semitones")).pack(side=tk.LEFT)
 
         # ===================== Progress =====================
-        prog_frame = ttk.Frame(root, padding=(10, 2, 10, 4))
+        prog_frame = ttk.Frame(root, padding=(10, 2, 10, 4), style="Soft.TFrame")
         prog_frame.pack(fill=tk.X)
 
         self._time_label = ttk.Label(
@@ -249,13 +523,17 @@ class MidiShowUI:
         lib_toolbar.pack(fill=tk.X, pady=(0, 4))
 
         ttk.Button(
-            lib_toolbar, text=_tr("library.add_files"), command=self._library_add_files
+            lib_toolbar,
+            text=_tr("library.add_files"),
+            command=self._library_add_files,
+            style="Accent.TButton",
         ).pack(side=tk.LEFT, padx=2)
 
         ttk.Button(
             lib_toolbar,
             text=_tr("library.add_folder"),
             command=self._library_add_folder,
+            style="Accent.TButton",
         ).pack(side=tk.LEFT, padx=2)
 
         ttk.Button(
@@ -304,7 +582,7 @@ class MidiShowUI:
         self._lib_placeholder = ttk.Label(
             lib_frame,
             text=_tr("library.empty"),
-            foreground="#999",
+            foreground="#7a99b8",
             anchor=tk.CENTER,
             justify=tk.CENTER,
         )
@@ -334,7 +612,7 @@ class MidiShowUI:
         ttk.Label(
             out_frame,
             textvariable=self._synth_port_var,
-            foreground="#888",
+            foreground="#7a99b8",
             font=("Segoe UI", 9),
         ).grid(row=1, column=0, sticky=tk.W, padx=20)
 
@@ -570,17 +848,17 @@ class MidiShowUI:
         self._track_placeholder = ttk.Label(
             track_inner,
             text=_tr("track.no_tracks"),
-            foreground="#999",
+            foreground="#7a99b8",
             anchor=tk.CENTER,
             justify=tk.CENTER,
         )
 
         # -- Live Passthrough --
         ttk.Separator(out_frame, orient=tk.HORIZONTAL).grid(
-            row=13, column=0, columnspan=2, sticky=tk.EW, pady=6
+            row=15, column=0, columnspan=2, sticky=tk.EW, pady=6
         )
         passthrough_frame = ttk.Frame(out_frame)
-        passthrough_frame.grid(row=14, column=0, sticky=tk.W, pady=2)
+        passthrough_frame.grid(row=16, column=0, sticky=tk.W, pady=2)
         self._passthrough_cb = ttk.Checkbutton(
             passthrough_frame,
             text=_tr("midi.passthrough"),
@@ -593,8 +871,81 @@ class MidiShowUI:
             passthrough_frame,
             textvariable=self._passthrough_status_var,
             font=("Segoe UI", 9, "italic"),
-            foreground="#555",
+            foreground="#7a99b8",
         ).pack(side=tk.LEFT, padx=8)
+
+        # ===================== Background tab =====================
+        bg_tab = ttk.Frame(nb, padding=14)
+        nb.add(bg_tab, text=_tr("tab.background"))
+
+        # Header
+        ttk.Label(
+            bg_tab,
+            text=_tr("bg.header"),
+            font=("Segoe UI", 12, "bold"),
+            foreground="#1f7ae0",
+        ).pack(anchor=tk.W, pady=(0, 4))
+        ttk.Label(
+            bg_tab, text=_tr("bg.hint"), foreground="#7a99b8", font=("Segoe UI", 9)
+        ).pack(anchor=tk.W, pady=(0, 14))
+
+        # Buttons row
+        bg_btn_frame = ttk.Frame(bg_tab)
+        bg_btn_frame.pack(fill=tk.X, pady=(0, 8))
+
+        self._bg_select_btn = ttk.Button(
+            bg_btn_frame,
+            text=_tr("bg.select"),
+            command=self._open_background_image_dialog,
+            style="Accent.TButton",
+        )
+        self._bg_select_btn.pack(side=tk.LEFT, padx=(0, 8))
+
+        self._bg_clear_btn = ttk.Button(
+            bg_btn_frame,
+            text=_tr("bg.clear"),
+            command=self._disable_background,
+        )
+        self._bg_clear_btn.pack(side=tk.LEFT)
+
+        # Enable checkbox
+        self._bg_enabled_var = tk.BooleanVar(value=self._settings.background_enabled)
+        self._bg_enabled_cb = ttk.Checkbutton(
+            bg_btn_frame,
+            text=_tr("bg.enable"),
+            variable=self._bg_enabled_var,
+            command=self.on_background_toggle,
+        )
+        self._bg_enabled_cb.pack(side=tk.LEFT, padx=(16, 0))
+
+        # Path display
+        self._bg_path_var = tk.StringVar(value=self._settings.background_image_path)
+        self._bg_path_label = ttk.Label(
+            bg_tab,
+            textvariable=self._bg_path_var,
+            foreground="#7a99b8",
+            font=("Segoe UI", 9),
+        )
+        self._bg_path_label.pack(anchor=tk.W, pady=(6, 12))
+
+        # Mode selector
+        bg_mode_frame = ttk.Frame(bg_tab)
+        bg_mode_frame.pack(fill=tk.X, pady=(0, 6))
+        ttk.Label(bg_mode_frame, text=_tr("bg.mode"), font=("Segoe UI", 10)).pack(
+            side=tk.LEFT
+        )
+        self._bg_mode_var = tk.StringVar(
+            value=getattr(self._settings, "background_mode", "cover")
+        )
+        bg_mode_combo = ttk.Combobox(
+            bg_mode_frame,
+            textvariable=self._bg_mode_var,
+            values=("cover", "contain"),
+            width=14,
+            state="readonly",
+        )
+        bg_mode_combo.pack(side=tk.LEFT, padx=10)
+        bg_mode_combo.bind("<<ComboboxSelected>>", lambda e: self._render_background())
 
         # -- Info tab --
         info_tab = ttk.Frame(nb, padding=10)
@@ -604,11 +955,12 @@ class MidiShowUI:
             info_tab,
             wrap=tk.WORD,
             font=("Segoe UI", 10),
-            bg=root.cget("bg"),
+            bg="#f5faff",
+            fg="#1a3a52",
             relief=tk.FLAT,
             bd=0,
-            padx=4,
-            pady=4,
+            padx=8,
+            pady=8,
         )
         help_label.insert(tk.END, _tr("help.content"))
         help_label.config(state=tk.DISABLED)
@@ -620,7 +972,15 @@ class MidiShowUI:
 
         self._status_var = tk.StringVar(value=_tr("status.ready"))
         status_label = tk.Label(
-            status_frame, textvariable=self._status_var, relief=tk.SUNKEN, anchor=tk.W
+            status_frame,
+            textvariable=self._status_var,
+            anchor=tk.W,
+            relief=tk.FLAT,
+            bg="#eaf3fb",
+            fg="#1a3a52",
+            padx=8,
+            pady=4,
+            font=("Segoe UI", 9),
         )
         status_label.pack(fill=tk.X)
 
@@ -631,15 +991,12 @@ class MidiShowUI:
         self._data = data
         self._engine.load(data)
 
-        self._note_on_count = 0
-        self._note_off_count = 0
-
         filename = os.path.basename(path)
         self._file_label.config(text=filename)
         self._title_label.config(text=data.title)
 
         dur = data.total_duration
-        dur_str = f"{int(dur // 60)}:{int(dur % 60):02d}"
+        dur_str = self._fmt_time(dur)
         self._note_count_var.set(
             _trf(
                 "note_count.format",
@@ -701,10 +1058,6 @@ class MidiShowUI:
             self._status_var.set(_tr("status.paused"))
 
     def _stop(self):
-        # Reset counters
-        self._note_on_count = 0
-        self._note_off_count = 0
-
         # Send all notes off
         self._local_synth.all_notes_off()
         self._virtual_midi.all_notes_off()
@@ -717,7 +1070,7 @@ class MidiShowUI:
         self._progress_bar["value"] = 0
         if self._data:
             dur = self._data.total_duration
-            tot_str = f"{int(dur // 60)}:{int(dur % 60):02d}"
+            tot_str = self._fmt_time(dur)
             self._time_label.config(text=f"0:00 / {tot_str}")
         self._status_var.set(_tr("status.stopped"))
 
@@ -809,7 +1162,7 @@ class MidiShowUI:
                 text=str(note_count),
                 width=10,
                 anchor=tk.W,
-                foreground="#666",
+                foreground="#7a99b8",
             ).pack(side=tk.LEFT, padx=4)
 
             # Mute button (toggle)
@@ -918,8 +1271,8 @@ class MidiShowUI:
         was_playing = self._engine.is_playing and not self._engine.is_paused
         self._engine.seek(target)
         self._progress_bar["value"] = target
-        cur_str = f"{int(target // 60)}:{int(target % 60):02d}"
-        tot_str = f"{int(total // 60)}:{int(total % 60):02d}"
+        cur_str = self._fmt_time(target)
+        tot_str = self._fmt_time(total)
         self._time_label.config(text=f"{cur_str} / {tot_str}")
         if not was_playing:
             self._engine.pause()  # keep paused if user was dragging while stopped/paused
@@ -935,8 +1288,8 @@ class MidiShowUI:
         ratio = event.x / w
         target = max(0.0, min(total, ratio * total))
         self._progress_bar["value"] = target
-        cur_str = f"{int(target // 60)}:{int(target % 60):02d}"
-        tot_str = f"{int(total // 60)}:{int(total % 60):02d}"
+        cur_str = self._fmt_time(target)
+        tot_str = self._fmt_time(total)
         self._time_label.config(text=f"{cur_str} / {tot_str}")
         return ratio
 
@@ -1002,9 +1355,30 @@ class MidiShowUI:
             _tr("status.local_on") if enabled else _tr("status.local_off")
         )
 
+    @staticmethod
+    def _normalize_port_name(name: str) -> str:
+        return name.lower().replace(" ", "").strip()
+
+    def _has_loop_port_conflict(self, virtual_port: str, input_port: str) -> bool:
+        if not virtual_port or not input_port:
+            return False
+        return self._normalize_port_name(virtual_port) == self._normalize_port_name(
+            input_port
+        )
+
     def _toggle_virtual(self):
         enabled = self._virtual_var.get()
+        input_port = (
+            self._midi_input_port_var.get().strip() if self._midi_input_port_var else ""
+        )
         if enabled and not self._virtual_midi.get_port_name().startswith("Not"):
+            if self._has_loop_port_conflict(
+                self._virtual_midi.get_port_name(), input_port
+            ):
+                self._virtual_var.set(False)
+                self._virtual_midi.enabled = False
+                self._status_var.set(_tr("status.midi_loop_conflict"))
+                return
             self._virtual_midi.enabled = True
             self._status_var.set(
                 _trf("status.virtual_on", port=self._virtual_midi.get_port_name())
@@ -1033,6 +1407,10 @@ class MidiShowUI:
             )
             if candidates:
                 port = candidates[0]
+                if self._has_loop_port_conflict(port, input_port):
+                    self._virtual_var.set(False)
+                    self._status_var.set(_tr("status.midi_loop_conflict"))
+                    return
                 self._virtual_midi.set_port_name(port)
                 self._virtual_port_var.set(port)
                 self._virtual_midi.enabled = True
@@ -1065,6 +1443,14 @@ class MidiShowUI:
     def _apply_virtual_port(self):
         name = self._virtual_port_var.get().strip()
         if name:
+            input_port = (
+                self._midi_input_port_var.get().strip()
+                if self._midi_input_port_var
+                else ""
+            )
+            if self._has_loop_port_conflict(name, input_port):
+                self._status_var.set(_tr("status.midi_loop_conflict"))
+                return
             self._virtual_midi.set_port_name(name)
             ports = self._virtual_midi.get_available_ports()
             for p in ports:
@@ -1101,6 +1487,198 @@ class MidiShowUI:
             else "/avatar/parameters/ (Custom Avatar)"
         )
         self._status_var.set(_trf("status.osc_mode", mode=mode_name))
+
+    # ===================== Background Image =====================
+
+    def on_background_toggle(self):
+        """Handle background checkbox toggle."""
+        if self._bg_enabled_var.get():
+            # If there's no path set, open file dialog
+            if not self._bg_path_var.get():
+                self._open_background_image_dialog()
+            else:
+                self._load_background_image()
+        else:
+            # Disable background
+            self._disable_background()
+
+    def _open_background_image_dialog(self):
+        """Open file dialog to select background image."""
+        filename = filedialog.askopenfilename(
+            title=_tr("bg.select"),
+            filetypes=[
+                (_tr("dialog.image_files"), "*.png *.jpg *.jpeg *.gif *.bmp"),
+                (_tr("dialog.all_files"), "*.*"),
+            ],
+        )
+        if filename:
+            self._bg_path_var.set(filename)
+            if self._bg_enabled_var is not None:
+                self._bg_enabled_var.set(True)
+            self._load_background_image()
+
+    def _load_background_image(self):
+        """Load and display the selected background image."""
+        path = self._bg_path_var.get().strip() if self._bg_path_var else ""
+        if not path:
+            return
+
+        if self._load_and_display_background(path):
+            self._status_var.set(_trf("bg.status_set", path=path))
+        else:
+            self._status_var.set(_trf("bg.status_failed", path=path))
+            if self._bg_enabled_var is not None:
+                self._bg_enabled_var.set(False)
+
+    def _load_and_display_background(self, path: str) -> bool:
+        """Load a background image and draw it behind the normal widgets."""
+        try:
+            if not os.path.isfile(path):
+                logger.warning("Background image not found: %s", path)
+                return False
+
+            self._bg_image_obj = Image.open(path).convert("RGBA")
+            self._render_background()
+            if self._bg_path_var is not None:
+                self._bg_path_var.set(path)
+            if self._bg_enabled_var is not None:
+                self._bg_enabled_var.set(True)
+            return True
+        except Exception as exc:
+            logger.warning("Failed to load background image %s: %s", path, exc)
+            self._bg_image_obj = None
+            self._remove_background_label()
+            return False
+
+    def _render_background(self):
+        """Render a two-layer background: blurred atmosphere + readable foreground image."""
+        if self._bg_image_obj is None:
+            return
+
+        width = max(self.root.winfo_width(), self._settings.window_width, 1)
+        height = max(self.root.winfo_height(), self._settings.window_height, 1)
+        img_ratio = self._bg_image_obj.width / self._bg_image_obj.height
+        window_ratio = width / height
+
+        mode = "cover"
+        if self._bg_mode_var is not None:
+            try:
+                mode = self._bg_mode_var.get()
+            except Exception:
+                pass
+
+        # Base layer: blurred/dimmed cover fill for atmosphere
+        if img_ratio > window_ratio:
+            base_height = height
+            base_width = max(1, int(height * img_ratio))
+        else:
+            base_width = width
+            base_height = max(1, int(width / img_ratio))
+        base = self._bg_image_obj.resize(
+            (base_width, base_height), Image.Resampling.LANCZOS
+        )
+        left = max(0, (base_width - width) // 2)
+        top = max(0, (base_height - height) // 2)
+        base = base.crop((left, top, left + width, top + height))
+        base = ImageEnhance.Color(
+            ImageEnhance.Brightness(
+                base.filter(ImageFilter.GaussianBlur(radius=14))
+            ).enhance(0.48)
+        ).enhance(0.82)
+
+        # Cool wash + stronger dark overlay for readability
+        wash = Image.new("RGBA", (width, height), (225, 240, 255, 58))
+        shade = Image.new("RGBA", (width, height), (8, 20, 36, 92))
+        canvas_img = Image.alpha_composite(base, wash)
+        canvas_img = Image.alpha_composite(canvas_img, shade)
+
+        # Center spotlight mask to subtly lift the main content area
+        spotlight = Image.new("L", (width, height), 0)
+        draw = ImageDraw.Draw(spotlight)
+        pad_x = int(width * 0.18)
+        pad_y = int(height * 0.16)
+        draw.ellipse((pad_x, pad_y, width - pad_x, height - pad_y), fill=180)
+        spotlight = spotlight.filter(ImageFilter.GaussianBlur(radius=60))
+        lift = Image.new("RGBA", (width, height), (255, 255, 255, 0))
+        lift.putalpha(spotlight)
+        canvas_img = Image.alpha_composite(canvas_img, lift)
+
+        # Foreground image layer
+        if mode == "contain":
+            if img_ratio > window_ratio:
+                fg_width = width
+                fg_height = max(1, int(width / img_ratio))
+            else:
+                fg_height = height
+                fg_width = max(1, int(height * img_ratio))
+            fg = self._bg_image_obj.resize(
+                (fg_width, fg_height), Image.Resampling.LANCZOS
+            )
+            fx = (width - fg_width) // 2
+            fy = (height - fg_height) // 2
+            canvas_img.alpha_composite(fg, (fx, fy))
+        else:
+            # In cover mode, add a slightly smaller, brighter centered hero crop for depth
+            hero_w = int(width * 0.88)
+            hero_h = int(height * 0.88)
+            if img_ratio > hero_w / hero_h:
+                fg_h = hero_h
+                fg_w = max(1, int(hero_h * img_ratio))
+            else:
+                fg_w = hero_w
+                fg_h = max(1, int(hero_w / img_ratio))
+            fg = self._bg_image_obj.resize((fg_w, fg_h), Image.Resampling.LANCZOS)
+            fl = max(0, (fg_w - hero_w) // 2)
+            ft = max(0, (fg_h - hero_h) // 2)
+            fg = fg.crop((fl, ft, fl + hero_w, ft + hero_h))
+            fg = ImageEnhance.Contrast(
+                ImageEnhance.Brightness(fg).enhance(1.06)
+            ).enhance(1.03)
+            fx = (width - hero_w) // 2
+            fy = (height - hero_h) // 2
+            # soft glass frame effect
+            frame = Image.new("RGBA", (hero_w, hero_h), (255, 255, 255, 18))
+            fg = Image.alpha_composite(fg, frame)
+            canvas_img.alpha_composite(fg, (fx, fy))
+
+        self._bg_photo = ImageTk.PhotoImage(canvas_img)
+
+        if self._bg_label is None:
+            self._bg_label = tk.Label(self.root, image=self._bg_photo, borderwidth=0)
+            self._bg_label.place(x=0, y=0, relwidth=1, relheight=1)
+        else:
+            self._bg_label.configure(image=self._bg_photo)
+        self._bg_label.lower()
+
+    def _resize_background_on_window_resize(self, event=None):
+        """Throttle background re-rendering while the window is being resized."""
+        if event is not None and event.widget is not self.root:
+            return
+        if self._bg_image_obj is None:
+            return
+        if self._bg_resize_pending is not None:
+            self.root.after_cancel(self._bg_resize_pending)
+        self._bg_resize_pending = self.root.after(80, self._resize_background_now)
+
+    def _resize_background_now(self):
+        self._bg_resize_pending = None
+        self._render_background()
+
+    def _remove_background_label(self):
+        if self._bg_label is not None:
+            self._bg_label.destroy()
+            self._bg_label = None
+        self._bg_photo = None
+
+    def _disable_background(self):
+        """Disable and remove background image."""
+        self._bg_image_obj = None
+        self._remove_background_label()
+        if self._bg_enabled_var is not None:
+            self._bg_enabled_var.set(False)
+        if self._bg_path_var is not None:
+            self._bg_path_var.set("")
+        self._status_var.set(_tr("bg.status_cleared"))
 
     # ===================== Engine callbacks =====================
 
@@ -1167,7 +1745,6 @@ class MidiShowUI:
                 getattr(out, method)(note, velocity, channel)
 
     def _on_note_on(self, note_event):
-        self._note_on_count += 1
         vel = self._get_scaled_velocity(note_event.velocity)
         transpose = self._settings.playback_transpose
         self._dispatch_note_to_outputs(
@@ -1175,7 +1752,6 @@ class MidiShowUI:
         )
 
     def _on_note_off(self, note_event):
-        self._note_off_count += 1
         transpose = self._settings.playback_transpose
         self._dispatch_note_to_outputs(
             "note_off",
@@ -1204,6 +1780,17 @@ class MidiShowUI:
         enabled = self._midi_input_var.get()
         # Apply the selected port before toggling
         port = self._midi_input_port_var.get().strip()
+        virtual_port = (
+            self._virtual_port_var.get().strip() if self._virtual_port_var else ""
+        )
+        if (
+            enabled
+            and self._virtual_midi.enabled
+            and self._has_loop_port_conflict(virtual_port, port)
+        ):
+            self._midi_input_var.set(False)
+            self._status_var.set(_tr("status.midi_loop_conflict"))
+            return
         if port:
             self._midi_input.set_port_name(port)
         self._midi_input.enabled = enabled
@@ -1272,9 +1859,7 @@ class MidiShowUI:
             tree.delete(item)
 
         for i, entry in enumerate(self._library.entries):
-            dur_str = (
-                f"{int(entry.duration_sec // 60)}:{int(entry.duration_sec % 60):02d}"
-            )
+            dur_str = self._fmt_time(entry.duration_sec)
             tree.insert(
                 "",
                 tk.END,
@@ -1440,17 +2025,20 @@ class MidiShowUI:
         self._settings.playback_transpose = self._playback_transpose_var.get()
         self._settings.midi_input_transpose = self._midi_input_transpose_var.get()
         self._settings.volume = float(self._volume_var.get())
+        if self._bg_enabled_var is not None:
+            self._settings.background_enabled = bool(self._bg_enabled_var.get())
+        if self._bg_path_var is not None:
+            self._settings.background_image_path = self._bg_path_var.get()
+        if self._bg_mode_var is not None:
+            self._settings.background_mode = self._bg_mode_var.get()
 
     def _on_engine_update(self, current_time: float):
-        """Called periodically from the engine thread (~100ms) to update progress.
+        """Called periodically from the engine thread (~100ms).
 
-        Uses ``root.after(0, ...)`` to safely schedule the UI update on the
-        main thread, keeping the progress bar smooth during long silent gaps.
+        Keep this callback lightweight so the UI relies on the single
+        ``_update_timer`` after-chain instead of queueing extra Tk events.
         """
-        try:
-            self.root.after(0, self._update_timer)
-        except tk.TclError:
-            pass  # window was destroyed
+        self._last_update_time = current_time
 
     def run(self):
         self.root.mainloop()
