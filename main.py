@@ -15,7 +15,12 @@ import os
 import sys
 
 # Add parent dir to path so 'midi_show' package is importable
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# When running as PyInstaller bundle, sys._MEIPASS points to the temp extraction dir
+if getattr(sys, "frozen", False):
+    # Running as compiled exe — PyInstaller sets sys._MEIPASS
+    sys.path.insert(0, sys._MEIPASS)
+else:
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 
 def _show_error_and_exit(title: str, message: str):
@@ -60,15 +65,21 @@ def main():
     )
 
     # Fix Windows console encoding for emoji
-    import io
+    # When running as GUI (no console), sys.stdout may be None — skip this
+    if sys.stdout is not None and hasattr(sys.stdout, "buffer"):
+        import io
 
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+        sys.stdout = io.TextIOWrapper(
+            sys.stdout.buffer, encoding="utf-8", errors="replace"
+        )
 
     # === 启动前安全检查 ===
     _check_critical_imports()
 
-    print("[MIDI Show] VRChat MIDI Player")
-    print("Loading...")
+    # Only print if stdout is available (not None in GUI mode)
+    if sys.stdout is not None:
+        print("[MIDI Show] VRChat MIDI Player")
+        print("Loading...")
 
     try:
         from midi_show.ui import MidiShowUI
